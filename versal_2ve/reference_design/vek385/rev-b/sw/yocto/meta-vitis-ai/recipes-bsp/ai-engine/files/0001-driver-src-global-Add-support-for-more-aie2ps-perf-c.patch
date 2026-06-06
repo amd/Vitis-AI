@@ -1,0 +1,209 @@
+From efc78f81b5c35c18faa4a8ffb686d698aae50eb5 Mon Sep 17 00:00:00 2001
+From: Gregory Williams <gregory.williams@amd.com>
+Date: Tue, 24 Mar 2026 13:27:41 -0700
+Subject: [AIENGINE PATCH V2 1/2] driver: src: global: Add support for more aie2ps
+ perf counters
+
+In aie2ps there is now 6 counters in shim tile and 4 counters in core
+tile memory module. This patch adds members to support the higher number
+of counters. For these new counters, there is an initial offset 0x8
+between CtrlReg0 and CtrlReg1. There is also now more than 1 reset
+control register and only 2 perf counters are controlled per register
+instead of the usual 4.
+
+Signed-off-by: Gregory Williams <gregory.williams@amd.com>
+---
+ driver/src/global/xaie2psgbl_reginit.c | 20 ++++++++++++++----
+ driver/src/global/xaiegbl_regdef.h     |  3 +++
+ driver/src/global/xaiegbl_reginit.c    | 17 ++++++++++++----
+ driver/src/global/xaiemlgbl_reginit.c  | 28 ++++++++++++++++++--------
+ 4 files changed, 52 insertions(+), 16 deletions(-)
+
+diff --git a/driver/src/global/xaie2psgbl_reginit.c b/driver/src/global/xaie2psgbl_reginit.c
+index 9f8cd428..3aa0acd0 100644
+--- a/driver/src/global/xaie2psgbl_reginit.c
++++ b/driver/src/global/xaie2psgbl_reginit.c
+@@ -2672,8 +2672,11 @@ static const XAie_PerfMod Aie2PSTilePerfCnt[] =
+ 		.ResetShift = 8U,
+ 		.PerfCounterOffsetAdd = 0X4,
+ 		.PerfCtrlBaseAddr = XAIE2PSGBL_MEMORY_MODULE_PERFORMANCE_CONTROL0,
+-		.PerfCtrlOffsetAdd = 0x4,
++		.PerfCtrlOffsetAdd = 0x8U,
++		.PerfCtrlOffsetGap = 0x4U,
+ 		.PerfCtrlResetBaseAddr = XAIE2PSGBL_MEMORY_MODULE_PERFORMANCE_CONTROL1,
++		.PerfCtrlResetOffsetAdd = 0x8U,
++		.PerfCtrlResetPerReg = 0x2U,
+ 		.PerfCounterBaseAddr = XAIE2PSGBL_MEMORY_MODULE_PERFORMANCE_COUNTER0,
+ 		.PerfCounterEvtValBaseAddr = XAIE2PSGBL_MEMORY_MODULE_PERFORMANCE_COUNTER0_EVENT_VALUE,
+ 		{XAIE2PSGBL_MEMORY_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_LSB, XAIE2PSGBL_MEMORY_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_MASK},
+@@ -2685,8 +2688,11 @@ static const XAie_PerfMod Aie2PSTilePerfCnt[] =
+ 		.ResetShift = 8U,
+ 		.PerfCounterOffsetAdd = 0X4,
+ 		.PerfCtrlBaseAddr = XAIE2PSGBL_CORE_MODULE_PERFORMANCE_CONTROL0,
+-		.PerfCtrlOffsetAdd = 0x4,
++		.PerfCtrlOffsetAdd = 0x4U,
++		.PerfCtrlOffsetGap = 0x0U,
+ 		.PerfCtrlResetBaseAddr = XAIE2PSGBL_CORE_MODULE_PERFORMANCE_CONTROL2,
++		.PerfCtrlResetOffsetAdd = 0x0U,
++		.PerfCtrlResetPerReg = 0x4U,
+ 		.PerfCounterBaseAddr = XAIE2PSGBL_CORE_MODULE_PERFORMANCE_COUNTER0,
+ 		.PerfCounterEvtValBaseAddr = XAIE2PSGBL_CORE_MODULE_PERFORMANCE_COUNTER0_EVENT_VALUE,
+ 		{XAIE2PSGBL_CORE_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_LSB, XAIE2PSGBL_CORE_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_MASK},
+@@ -2706,8 +2712,11 @@ static const XAie_PerfMod Aie2PSPlPerfCnt =
+ 	.ResetShift = 8U,
+ 	.PerfCounterOffsetAdd = 0x4,
+ 	.PerfCtrlBaseAddr = XAIE2PSGBL_PL_MODULE_PERFORMANCE_CTRL0,
+-	.PerfCtrlOffsetAdd = 0x0,
++	.PerfCtrlOffsetAdd = 0x8U,
++	.PerfCtrlOffsetGap = 0x4U,
+ 	.PerfCtrlResetBaseAddr = XAIE2PSGBL_PL_MODULE_PERFORMANCE_CTRL1,
++	.PerfCtrlResetOffsetAdd = 0x8U,
++	.PerfCtrlResetPerReg = 0x2U,
+ 	.PerfCounterBaseAddr = XAIE2PSGBL_PL_MODULE_PERFORMANCE_COUNTER0,
+ 	.PerfCounterEvtValBaseAddr = XAIE2PSGBL_PL_MODULE_PERFORMANCE_COUNTER0_EVENT_VALUE,
+ 	{XAIE2PSGBL_PL_MODULE_PERFORMANCE_CTRL0_CNT0_START_EVENT_LSB, XAIE2PSGBL_PL_MODULE_PERFORMANCE_CTRL0_CNT0_START_EVENT_MASK},
+@@ -2725,8 +2734,11 @@ static const XAie_PerfMod Aie2PSMemTilePerfCnt =
+ 	.ResetShift = 8U,
+ 	.PerfCounterOffsetAdd = 0X4,
+ 	.PerfCtrlBaseAddr = XAIE2PSGBL_MEM_TILE_MODULE_PERFORMANCE_CONTROL0,
+-	.PerfCtrlOffsetAdd = 0x4,
++	.PerfCtrlOffsetAdd = 0x4U,
++	.PerfCtrlOffsetGap = 0x0U,
+ 	.PerfCtrlResetBaseAddr = XAIE2PSGBL_MEM_TILE_MODULE_PERFORMANCE_CONTROL2,
++	.PerfCtrlResetOffsetAdd = 0x0U,
++	.PerfCtrlResetPerReg = 0x4U,
+ 	.PerfCounterBaseAddr = XAIE2PSGBL_MEM_TILE_MODULE_PERFORMANCE_COUNTER0,
+ 	.PerfCounterEvtValBaseAddr = XAIE2PSGBL_MEM_TILE_MODULE_PERFORMANCE_COUNTER0_EVENT_VALUE,
+ 	{XAIE2PSGBL_MEM_TILE_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_LSB, XAIE2PSGBL_MEM_TILE_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_MASK},
+diff --git a/driver/src/global/xaiegbl_regdef.h b/driver/src/global/xaiegbl_regdef.h
+index dc84f375..5521f2a7 100644
+--- a/driver/src/global/xaiegbl_regdef.h
++++ b/driver/src/global/xaiegbl_regdef.h
+@@ -830,7 +830,10 @@ typedef struct XAie_PerfMod {
+ 	u8 PerfCounterOffsetAdd;/* Add to calc perf cntrl offset for counter */
+ 	u32 PerfCtrlBaseAddr;   /* Perf counter ctrl register offset address */
+ 	u32 PerfCtrlOffsetAdd;  /* Add this val for next Perf counter ctrl reg*/
++	u32 PerfCtrlOffsetGap;  /* Some archs have a register gap in between control regs*/
+ 	u32 PerfCtrlResetBaseAddr;/* Perf counter ctrl offset addr for reset */
++	u32 PerfCtrlResetOffsetAdd;/* Add this val for next Perf counter reset control reg*/
++	u32 PerfCtrlResetPerReg;/* How many counter reset controls per register*/
+ 	u32 PerfCounterBaseAddr; /* Offset addr for perf counter 0 */
+ 	u32 PerfCounterEvtValBaseAddr; /* Offset addr for perf counter evnt val*/
+ 	const XAie_RegFldAttr Start; /* lsb and mask for start event for ctr0 */
+diff --git a/driver/src/global/xaiegbl_reginit.c b/driver/src/global/xaiegbl_reginit.c
+index 5a24e8db..ca671f0c 100644
+--- a/driver/src/global/xaiegbl_reginit.c
++++ b/driver/src/global/xaiegbl_reginit.c
+@@ -2194,8 +2194,11 @@ static const XAie_PerfMod AieTilePerfCnt[] =
+ 		.ResetShift = 8U,
+ 		.PerfCounterOffsetAdd = 0x4,
+ 		.PerfCtrlBaseAddr = XAIEGBL_MEM_PERCTRL0,
+-		.PerfCtrlOffsetAdd = 0x0,
++		.PerfCtrlOffsetAdd = 0x0U,
++		.PerfCtrlOffsetGap = 0x0U,
+ 		.PerfCtrlResetBaseAddr = XAIEGBL_MEM_PERCTRL1,
++		.PerfCtrlResetOffsetAdd = 0x0U,
++		.PerfCtrlResetPerReg = 0x2U,
+ 		.PerfCounterBaseAddr = XAIEGBL_MEM_PERCOU0,
+ 		.PerfCounterEvtValBaseAddr = XAIEGBL_MEM_PERCOU0EVTVAL,
+ 		{XAIEGBL_MEM_PERCTRL0_CNT0STAEVT_LSB, XAIEGBL_MEM_PERCTRL0_CNT0STAEVT_MASK},
+@@ -2206,10 +2209,13 @@ static const XAie_PerfMod AieTilePerfCnt[] =
+ 		.MaxCounterVal = 4U,
+ 		.StartStopShift = 16U,
+ 		.ResetShift = 8U,
+-		.PerfCounterOffsetAdd = 0x4,
++		.PerfCounterOffsetAdd = 0x4U,
+ 		.PerfCtrlBaseAddr = XAIEGBL_CORE_PERCTR0,
+-		.PerfCtrlOffsetAdd = 0x4,
++		.PerfCtrlOffsetAdd = 0x4U,
++		.PerfCtrlOffsetGap = 0x0U,
+ 		.PerfCtrlResetBaseAddr = XAIEGBL_CORE_PERCTR2,
++		.PerfCtrlResetOffsetAdd = 0x0U,
++		.PerfCtrlResetPerReg = 0x4U,
+ 		.PerfCounterBaseAddr = XAIEGBL_CORE_PERCOU0,
+ 		.PerfCounterEvtValBaseAddr = XAIEGBL_CORE_PERCOU0EVTVAL,
+ 		{XAIEGBL_CORE_PERCTR0_CNT0STAEVT_LSB, XAIEGBL_CORE_PERCTR0_CNT0STAEVT_MASK},
+@@ -2229,8 +2235,11 @@ static const XAie_PerfMod AiePlPerfCnt =
+ 	.ResetShift = 8U,
+ 	.PerfCounterOffsetAdd = 0x4,
+ 	.PerfCtrlBaseAddr = XAIEGBL_PL_PERCTR0,
+-	.PerfCtrlOffsetAdd = 0x0,
++	.PerfCtrlOffsetAdd = 0x0U,
++	.PerfCtrlOffsetGap = 0x0U,
+ 	.PerfCtrlResetBaseAddr = XAIEGBL_PL_PERCTR1,
++	.PerfCtrlResetOffsetAdd = 0x0U,
++	.PerfCtrlResetPerReg = 0x2U,
+ 	.PerfCounterBaseAddr = XAIEGBL_PL_PERCOU0,
+ 	.PerfCounterEvtValBaseAddr = XAIEGBL_PL_PERCOU0EVTVAL,
+ 	{XAIEGBL_PL_PERCTR0_CNT0STAEVT_LSB, XAIEGBL_PL_PERCTR0_CNT0STAEVT_MASK},
+diff --git a/driver/src/global/xaiemlgbl_reginit.c b/driver/src/global/xaiemlgbl_reginit.c
+index 69dae7d9..8adf8e9d 100644
+--- a/driver/src/global/xaiemlgbl_reginit.c
++++ b/driver/src/global/xaiemlgbl_reginit.c
+@@ -3157,10 +3157,13 @@ static const XAie_PerfMod AieMlTilePerfCnt[] =
+ 	{	.MaxCounterVal = 2U,
+ 		.StartStopShift = 16U,
+ 		.ResetShift = 8U,
+-		.PerfCounterOffsetAdd = 0X4,
++		.PerfCounterOffsetAdd = 0X4U,
+ 		.PerfCtrlBaseAddr = XAIEMLGBL_MEMORY_MODULE_PERFORMANCE_CONTROL0,
+-		.PerfCtrlOffsetAdd = 0x4,
++		.PerfCtrlOffsetAdd = 0x4U,
++		.PerfCtrlOffsetGap = 0x4U,
+ 		.PerfCtrlResetBaseAddr = XAIEMLGBL_MEMORY_MODULE_PERFORMANCE_CONTROL1,
++		.PerfCtrlResetOffsetAdd = 0x0U,
++		.PerfCtrlResetPerReg = 0x2U,
+ 		.PerfCounterBaseAddr = XAIEMLGBL_MEMORY_MODULE_PERFORMANCE_COUNTER0,
+ 		.PerfCounterEvtValBaseAddr = XAIEMLGBL_MEMORY_MODULE_PERFORMANCE_COUNTER0_EVENT_VALUE,
+ 		{XAIEMLGBL_MEMORY_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_LSB, XAIEMLGBL_MEMORY_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_MASK},
+@@ -3170,10 +3173,13 @@ static const XAie_PerfMod AieMlTilePerfCnt[] =
+ 	{	.MaxCounterVal = 4U,
+ 		.StartStopShift = 16U,
+ 		.ResetShift = 8U,
+-		.PerfCounterOffsetAdd = 0X4,
++		.PerfCounterOffsetAdd = 0X4U,
+ 		.PerfCtrlBaseAddr = XAIEMLGBL_CORE_MODULE_PERFORMANCE_CONTROL0,
+-		.PerfCtrlOffsetAdd = 0x4,
++		.PerfCtrlOffsetAdd = 0x4U,
++		.PerfCtrlOffsetGap = 0x4U,
+ 		.PerfCtrlResetBaseAddr = XAIEMLGBL_CORE_MODULE_PERFORMANCE_CONTROL2,
++		.PerfCtrlResetOffsetAdd = 0x0U,
++		.PerfCtrlResetPerReg = 0x4U,
+ 		.PerfCounterBaseAddr = XAIEMLGBL_CORE_MODULE_PERFORMANCE_COUNTER0,
+ 		.PerfCounterEvtValBaseAddr = XAIEMLGBL_CORE_MODULE_PERFORMANCE_COUNTER0_EVENT_VALUE,
+ 		{XAIEMLGBL_CORE_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_LSB, XAIEMLGBL_CORE_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_MASK},
+@@ -3191,10 +3197,13 @@ static const XAie_PerfMod AieMlPlPerfCnt =
+ 	.MaxCounterVal = 2U,
+ 	.StartStopShift = 16U,
+ 	.ResetShift = 8U,
+-	.PerfCounterOffsetAdd = 0x4,
++	.PerfCounterOffsetAdd = 0x4U,
+ 	.PerfCtrlBaseAddr = XAIEMLGBL_PL_MODULE_PERFORMANCE_CTRL0,
+-	.PerfCtrlOffsetAdd = 0x0,
++	.PerfCtrlOffsetAdd = 0x0U,
++	.PerfCtrlOffsetGap = 0x0U,
+ 	.PerfCtrlResetBaseAddr = XAIEMLGBL_PL_MODULE_PERFORMANCE_CTRL1,
++	.PerfCtrlResetOffsetAdd = 0x0U,
++	.PerfCtrlResetPerReg = 0x2U,
+ 	.PerfCounterBaseAddr = XAIEMLGBL_PL_MODULE_PERFORMANCE_COUNTER0,
+ 	.PerfCounterEvtValBaseAddr = XAIEMLGBL_PL_MODULE_PERFORMANCE_COUNTER0_EVENT_VALUE,
+ 	{XAIEMLGBL_PL_MODULE_PERFORMANCE_CTRL0_CNT0_START_EVENT_LSB, XAIEMLGBL_PL_MODULE_PERFORMANCE_CTRL0_CNT0_START_EVENT_MASK},
+@@ -3210,10 +3219,13 @@ static const XAie_PerfMod AieMlMemTilePerfCnt =
+ 	.MaxCounterVal = 4U,
+ 	.StartStopShift = 16U,
+ 	.ResetShift = 8U,
+-	.PerfCounterOffsetAdd = 0X4,
++	.PerfCounterOffsetAdd = 0X4U,
+ 	.PerfCtrlBaseAddr = XAIEMLGBL_MEM_TILE_MODULE_PERFORMANCE_CONTROL0,
+-	.PerfCtrlOffsetAdd = 0x4,
++	.PerfCtrlOffsetAdd = 0x4U,
++	.PerfCtrlOffsetGap = 0x0U,
+ 	.PerfCtrlResetBaseAddr = XAIEMLGBL_MEM_TILE_MODULE_PERFORMANCE_CONTROL2,
++	.PerfCtrlResetOffsetAdd = 0x0U,
++	.PerfCtrlResetPerReg = 0x4U,
+ 	.PerfCounterBaseAddr = XAIEMLGBL_MEM_TILE_MODULE_PERFORMANCE_COUNTER0,
+ 	.PerfCounterEvtValBaseAddr = XAIEMLGBL_MEM_TILE_MODULE_PERFORMANCE_COUNTER0_EVENT_VALUE,
+ 	{XAIEMLGBL_MEM_TILE_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_LSB, XAIEMLGBL_MEM_TILE_MODULE_PERFORMANCE_CONTROL0_CNT0_START_EVENT_MASK},
+-- 
+2.34.1
+

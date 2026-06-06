@@ -1,0 +1,17 @@
+{
+  "inference-config": {
+    "model-file": "/etc/vai/models/resnet50_int8/resnet50_int8.onnx",
+    "ifms-config": [
+      {
+        "name": "input",
+        "file": "/etc/vai/models/resnet50_int8/data/ifm_input_fp32_1x3x224x224.bin"
+      }
+    ],
+    "execution-provider-options": {
+      "config_file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
+      "target": "VAIML",
+      "cache_dir": "/etc/vai/models",
+      "cache_key": "resnet50_int8"
+    }
+  }
+}

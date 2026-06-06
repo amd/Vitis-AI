@@ -1,0 +1,9 @@
+{
+  "xclbin-location": "/run/media/mmcblk0p1/x_plus_ml.xclbin",
+  "device-index": 1,
+  "models-config": [
+    {
+      "config-path": "/etc/vai/x_plus_ml_ort/json_configs/resnet50_int8.json"
+    }
+  ]
+}

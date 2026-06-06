@@ -1,0 +1,31 @@
+From cceb1a6e3fd566b2b0478f7642379e5bd809f489 Mon Sep 17 00:00:00 2001
+From: Gregory Williams <gregory.williams@amd.com>
+Date: Tue, 3 Feb 2026 08:08:40 -0800
+Subject: [PATCH] driver: src: global: Fix counter values for aie2ps
+
+Fix counter values for aie2ps shim tiles. Shim tiles now have 6 counters
+instead of 2.
+
+Signed-off-by: Gregory Williams <gregory.williams@amd.com>
+
+Acked-By: Jaydip Patel<jaydip.patel@amd.com>
+---
+ driver/src/global/xaie2psgbl_reginit.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/driver/src/global/xaie2psgbl_reginit.c b/driver/src/global/xaie2psgbl_reginit.c
+index 25c82816..9f8cd428 100644
+--- a/driver/src/global/xaie2psgbl_reginit.c
++++ b/driver/src/global/xaie2psgbl_reginit.c
+@@ -2701,7 +2701,7 @@ static const XAie_PerfMod Aie2PSTilePerfCnt[] =
+  */
+ static const XAie_PerfMod Aie2PSPlPerfCnt =
+ {
+-	.MaxCounterVal = 2U,
++	.MaxCounterVal = 6U,
+ 	.StartStopShift = 16U,
+ 	.ResetShift = 8U,
+ 	.PerfCounterOffsetAdd = 0x4,
+-- 
+2.25.1
+

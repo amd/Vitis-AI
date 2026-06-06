@@ -1,0 +1,16 @@
+/ {
+        chosen {
+                bootargs = "earlycon=pl011,mmio32,0xf1930000 console=ttyAMA1,115200";
+                stdout-path = "serial1:115200n8";
+        };
+  };
+  &{/reserved-memory} {
+		
+		buffer@50000000000 {
+			reg = <0x500 0x00000000 0x01 0x00000000>;
+			compatible = "shared-dma-pool";
+			reusable;
+			linux,cma-default;
+		};
+
+  };

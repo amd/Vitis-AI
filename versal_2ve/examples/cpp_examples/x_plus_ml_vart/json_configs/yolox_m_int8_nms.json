@@ -1,0 +1,77 @@
+{
+  "preprocess-config": {
+    "mean-r": 0,
+    "mean-g": 0,
+    "mean-b": 0,
+    "scale-r": 1.0,
+    "scale-g": 1.0,
+    "scale-b": 1.0,
+    "colour-format": "RGBX",
+    "maintain-aspect-ratio": false,
+    "resizing-type": "LETTERBOX",
+    "in-mem-bank": 2,
+    "out-mem-bank": 2
+  },
+  "inference-config": {
+    "model-file": "/etc/vai/models/yolox_m_int8/yolox_m_int8.rai",
+    "runner-options": {
+      "config-file": "/etc/vai/models/yolox_m_int8/vitisai_config.json",
+      "log-level": "WARNING"
+    }
+  },
+  "ifms-config": [
+      {
+        "name": "images",
+        "file": "/etc/vai/models/yolox_m_int8/data/detections.jpg"
+      }
+  ],
+  "postprocess-config": {
+    "topk": 1,
+    "label-file-path": "/etc/vai/models/yolox_m_int8/data/coco_data_labels.txt",
+    "type": "NMS",
+    "nms-threshold": 0.4,
+    "conf-threshold": 0.5,
+    "post-process-print": "false",
+    "model-params": {
+      "is-obj-score-included": "true",
+      "grid-shape": [
+        [
+          80,
+          80
+        ],
+        [
+          40,
+          40
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "num-anchorboxes" : [],
+      "anchors": [],
+      "is-scaling-required" : "true",
+      "apply-sigmoid-to-obj-conf" : "false",
+      "input-layout": [
+        "HCWNC4"
+      ],
+      "output-layout": [
+        "NHC"
+      ]
+    }
+  },
+  "metaconvert-config": {
+    "font-size": 0.5,
+    "font": 3,
+    "thickness": 2,
+    "y-offset": 0,
+    "label-color": [
+      {
+        "level": 1,
+        "red": 0,
+        "green": 255,
+        "blue": 0
+      }
+    ]
+  }
+}

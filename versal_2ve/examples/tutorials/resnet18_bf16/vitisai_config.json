@@ -1,0 +1,30 @@
+{
+  "passes": [
+   {
+     "name": "init",
+     "plugin": "vaip-pass_init"
+   },
+   {
+    "name": "vaiml_partition",
+    "plugin": "vaip-pass_vaiml_partition",
+    "vaiml_config":
+    {
+      "device": "ve2-xc2ve3858",
+      "optimize_level": 2,
+      "logging_level": "info",
+      "keep_outputs": true,
+      "threshold_gops_percent": 20
+    }
+   }
+  ],
+  "target": "VAIML",
+  "targets": [
+    {
+        "name": "VAIML",
+        "pass": [
+            "init",
+            "vaiml_partition"
+        ]
+    }
+  ]
+}

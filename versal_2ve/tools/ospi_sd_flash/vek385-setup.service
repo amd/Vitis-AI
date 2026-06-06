@@ -1,0 +1,14 @@
+[Unit]
+Description=VEK385 board setup (overlay, runtime, UFS)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/overlay
+ExecStart=/overlay/setup_overlay.sh
+ExecStart=/overlay/runtime_env.sh
+ExecStart=/etc/ufs_config/configure_ufs.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

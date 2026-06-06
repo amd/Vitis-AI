@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" font-family="Arial, Helvetica, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#888"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="560" fill="white"/>
+
+  <!-- Title -->
+  <text x="640" y="40" text-anchor="middle" font-size="26" font-weight="bold" fill="#222">Spatial Sharing</text>
+
+  <!-- ======== IFM row ======== -->
+  <!-- IFM A above Col 0–3 -->
+  <rect x="105" y="70" width="110" height="40" rx="6" fill="#c8e6c9" stroke="#81c784" stroke-width="1.5"/>
+  <text x="160" y="96" text-anchor="middle" font-size="14" font-weight="bold" fill="#2e7d32">IFM A</text>
+
+  <!-- IFM B above Col 4–7 -->
+  <rect x="225" y="70" width="110" height="40" rx="6" fill="#c8e6c9" stroke="#81c784" stroke-width="1.5"/>
+  <text x="280" y="96" text-anchor="middle" font-size="14" font-weight="bold" fill="#2e7d32">IFM B</text>
+
+  <!-- Arrows IFM → NPU -->
+  <line x1="160" y1="110" x2="160" y2="160" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="280" y1="110" x2="280" y2="160" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ======== NPU block ======== -->
+  <rect x="85" y="160" width="1095" height="110" rx="14" fill="#fdf6e3" stroke="#ccc" stroke-width="2"/>
+  <text x="640" y="183" text-anchor="middle" font-size="16" font-weight="bold" fill="#333">NPU</text>
+
+  <!-- Active column 0–3 — Model A (light green) -->
+  <rect x="100" y="193" width="105" height="60" rx="8" fill="#c8e6c9" stroke="#66bb6a" stroke-width="2"/>
+  <text x="152" y="218" text-anchor="middle" font-size="12" font-weight="bold" fill="#2e7d32">Col 0–3</text>
+  <text x="152" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#2e7d32">4x4</text>
+
+  <!-- Active column 4–7 — Model B (light blue) -->
+  <rect x="220" y="193" width="105" height="60" rx="8" fill="#90caf9" stroke="#42a5f5" stroke-width="2"/>
+  <text x="272" y="218" text-anchor="middle" font-size="12" font-weight="bold" fill="#1565c0">Col 4–7</text>
+  <text x="272" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#1565c0">4x4</text>
+
+  <!-- Grey unused columns -->
+  <rect x="340" y="193" width="105" height="60" rx="8" fill="#e0e0e0" stroke="#bdbdbd" stroke-width="1.5"/>
+  <text x="392" y="218" text-anchor="middle" font-size="12" font-weight="bold" fill="#9e9e9e">Col 8–11</text>
+  <text x="392" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#9e9e9e">4x4</text>
+
+  <rect x="460" y="193" width="105" height="60" rx="8" fill="#e0e0e0" stroke="#bdbdbd" stroke-width="1.5"/>
+  <text x="512" y="218" text-anchor="middle" font-size="12" font-weight="bold" fill="#9e9e9e">Col 12–15</text>
+  <text x="512" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#9e9e9e">4x4</text>
+
+  <rect x="580" y="193" width="105" height="60" rx="8" fill="#e0e0e0" stroke="#bdbdbd" stroke-width="1.5"/>
+  <text x="632" y="218" text-anchor="middle" font-size="12" font-weight="bold" fill="#9e9e9e">Col 16–19</text>
+  <text x="632" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#9e9e9e">4x4</text>
+
+  <rect x="700" y="193" width="105" height="60" rx="8" fill="#e0e0e0" stroke="#bdbdbd" stroke-width="1.5"/>
+  <text x="752" y="218" text-anchor="middle" font-size="12" font-weight="bold" fill="#9e9e9e">Col 20–23</text>
+  <text x="752" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#9e9e9e">4x4</text>
+
+  <rect x="820" y="193" width="105" height="60" rx="8" fill="#e0e0e0" stroke="#bdbdbd" stroke-width="1.5"/>
+  <text x="872" y="218" text-anchor="middle" font-size="12" font-weight="bold" fill="#9e9e9e">Col 24–27</text>
+  <text x="872" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#9e9e9e">4x4</text>
+
+  <rect x="940" y="193" width="105" height="60" rx="8" fill="#e0e0e0" stroke="#bdbdbd" stroke-width="1.5"/>
+  <text x="992" y="218" text-anchor="middle" font-size="12" font-weight="bold" fill="#9e9e9e">Col 28–31</text>
+  <text x="992" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#9e9e9e">4x4</text>
+
+  <rect x="1060" y="193" width="105" height="60" rx="8" fill="#e0e0e0" stroke="#bdbdbd" stroke-width="1.5"/>
+  <text x="1112" y="218" text-anchor="middle" font-size="11" font-weight="bold" fill="#9e9e9e">Col 32–35</text>
+  <text x="1112" y="240" text-anchor="middle" font-size="13" font-weight="bold" fill="#9e9e9e">4x4</text>
+
+  <!-- ======== Arrows NPU → OFM ======== -->
+  <line x1="160" y1="270" x2="160" y2="310" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="280" y1="270" x2="280" y2="310" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- ======== OFM row ======== -->
+  <!-- OFM A below Col 0–3 -->
+  <rect x="105" y="315" width="110" height="40" rx="6" fill="#ffcdd2" stroke="#ef9a9a" stroke-width="1.5"/>
+  <text x="160" y="341" text-anchor="middle" font-size="14" font-weight="bold" fill="#c62828">OFM A</text>
+
+  <!-- OFM B below Col 4–7 -->
+  <rect x="225" y="315" width="110" height="40" rx="6" fill="#ffcdd2" stroke="#ef9a9a" stroke-width="1.5"/>
+  <text x="280" y="341" text-anchor="middle" font-size="14" font-weight="bold" fill="#c62828">OFM B</text>
+
+  <!-- ======== Legend ======== -->
+  <!-- Model A label -->
+  <rect x="105" y="400" width="20" height="20" rx="4" fill="#c8e6c9" stroke="#66bb6a" stroke-width="1.5"/>
+  <text x="135" y="416" font-size="13" font-weight="bold" fill="#2e7d32">Model A  (start_column = 0, aie_columns_sharing = false)</text>
+
+  <!-- Model B label -->
+  <rect x="105" y="430" width="20" height="20" rx="4" fill="#90caf9" stroke="#42a5f5" stroke-width="1.5"/>
+  <text x="135" y="446" font-size="13" font-weight="bold" fill="#1565c0">Model B  (start_column = 4, aie_columns_sharing = false)</text>
+
+  <!-- Subtitle -->
+  <text x="640" y="500" text-anchor="middle" font-size="13" fill="#666">Each model owns separate NPU columns — both run in parallel on dedicated hardware.</text>
+  <text x="640" y="522" text-anchor="middle" font-size="13" fill="#666">No time-sharing overhead. Column ranges must not overlap.</text>
+</svg>

@@ -1,0 +1,816 @@
+#!/usr/bin/expect -f
+#
+# vek385-flash-ospi.exp -- Automate OSPI programming on VEK385 Rev-B
+#
+# This script automates UG1787 (Board Setup):
+#   1. Connects to the board via XSDB (JTAG)
+#   2. Downloads BOOT.bin to board memory
+#   3. Downloads OSPI image to board memory via XSDB
+#   4. Flashes the OSPI image via U-Boot serial commands
+#
+# Prerequisites:
+#   - Board DIP switch SW1 set to JTAG mode (0000 = all ON)
+#   - Board powered on and connected via USB (JTAG + serial)
+#   - Vivado 2025.2 installed (for XSDB)
+#   - expect installed (sudo apt install expect)
+#
+# Usage:
+#   ./vek385-flash-ospi.exp --vivado-dir <path> --boot-images <path> [options]
+#
+# Required:
+#   --vivado-dir <path>    Vivado installation directory
+#                          (or set VIVADO_INSTALL_DIR env var)
+#   --boot-images <path>   Path to boot_images directory
+#
+# Options:
+#   --serial-port <dev>    Serial port device (default: auto-detect)
+#   --xsdb-port <port>     XSDB port number (default: 3121)
+#   --ospi-image <file>    OSPI image filename (default: auto-detect *ospi*.bin)
+#   --boot-bin <file>      Boot binary filename (default: BOOT.bin)
+#   --log-file <path>      Log file path (default: ./vek385-flash-ospi_<timestamp>.log)
+#   --dry-run              Validate paths and settings without touching hardware
+#   --help                 Show this help message
+#
+
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
+set vivado_dir ""
+set boot_images ""
+set serial_port ""
+set xsdb_port "3121"
+
+set ospi_image ""
+set boot_bin "BOOT.bin"
+set target_filter "*xc2ve3858*"
+
+# SPI flash erase block size (64 KB) and max capacity (256 MB)
+set erase_block 0x10000
+set flash_max   0x10000000
+
+set timestamp [clock format [clock seconds] -format "%Y%m%d_%H%M%S"]
+set log_path "[pwd]/vek385-flash-ospi_${timestamp}.log"
+set dry_run false
+
+# U-Boot prompt pattern (VEK385 uses "versal2>", some boards use "=>")
+set uboot_prompt "versal2>|=>"
+
+# Timeouts (seconds)
+set timeout_boot 120
+set timeout_dow 120   ;# Base timeout; scaled by image size before download
+set timeout_sf 60
+set timeout_flash 600
+
+# Track spawned processes for cleanup
+set xsdb_id -1
+set serial_id -1
+set serial_fd ""
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+proc usage {} {
+    puts "Usage: vek385-flash-ospi.exp --vivado-dir <path> --boot-images <path> \[options\]"
+    puts ""
+    puts "Automate OSPI programming on VEK385 Rev-B (UG1787)"
+    puts ""
+    puts "Required:"
+    puts "  --vivado-dir <path>    Vivado installation directory"
+    puts "                         (or set VIVADO_INSTALL_DIR env var)"
+    puts "  --boot-images <path>   Path to boot_images directory"
+    puts ""
+    puts "Options:"
+    puts "  --serial-port <dev>    Serial port device (default: auto-detect)"
+    puts "  --xsdb-port <port>     XSDB port number (default: 3121)"
+    puts "  --ospi-image <file>    OSPI image filename (default: auto-detect *ospi*.bin)"
+    puts "  --boot-bin <file>      Boot binary filename (default: BOOT.bin)"
+    puts "  --log-file <path>      Log file path (default: /tmp/vek385-flash-ospi.log)"
+    puts "  --dry-run              Validate paths and settings without touching hardware"
+    puts "  --help                 Show this help message"
+    exit 0
+}
+
+for {set i 0} {$i < $argc} {incr i} {
+    set arg [lindex $argv $i]
+    switch -- $arg {
+        "--vivado-dir" {
+            incr i
+            set vivado_dir [lindex $argv $i]
+        }
+        "--boot-images" {
+            incr i
+            set boot_images [lindex $argv $i]
+        }
+        "--serial-port" {
+            incr i
+            set serial_port [lindex $argv $i]
+        }
+        "--xsdb-port" {
+            incr i
+            set xsdb_port [lindex $argv $i]
+        }
+        "--ospi-image" {
+            incr i
+            set ospi_image [lindex $argv $i]
+        }
+        "--boot-bin" {
+            incr i
+            set boot_bin [lindex $argv $i]
+        }
+        "--log-file" {
+            incr i
+            set log_path [lindex $argv $i]
+        }
+        "--dry-run" {
+            set dry_run true
+        }
+        "--help" {
+            usage
+        }
+        default {
+            puts "ERROR: Unknown option: $arg"
+            usage
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Helper procs
+# ---------------------------------------------------------------------------
+proc step {msg} {
+    puts ""
+    puts "========================================================================"
+    puts "  $msg"
+    puts "========================================================================"
+}
+
+proc info_msg {msg} {
+    puts "  \[INFO\]  $msg"
+}
+
+proc warn_msg {msg} {
+    puts "  \[WARN\]  $msg"
+}
+
+proc error_exit {msg} {
+    puts ""
+    puts "  \[ERROR\] $msg"
+    puts ""
+    cleanup
+    exit 1
+}
+
+proc log_write {msg} {
+    global log_path
+    set fd [open $log_path a]
+    puts $fd $msg
+    close $fd
+}
+
+proc wait_for_enter {msg} {
+    puts ""
+    puts "  $msg"
+    puts -nonewline "  Press Enter to continue... "
+    flush stdout
+    set saved_timeout $::timeout
+    set ::timeout -1
+    expect_user -re "\n"
+    set ::timeout $saved_timeout
+}
+
+# ---------------------------------------------------------------------------
+# Cleanup -- called on exit or signal
+# ---------------------------------------------------------------------------
+proc cleanup {} {
+    global xsdb_id serial_id serial_fd log_path
+
+    log_user 1
+
+    if {$xsdb_id != -1} {
+        catch {
+            set ::spawn_id $xsdb_id
+            info_msg "Resetting board via XSDB..."
+            send "dev reset\r"
+            expect -timeout 5 "xsdb%"
+            send "exit\r"
+            expect -timeout 5 eof
+        }
+        catch { wait -i $xsdb_id }
+        set xsdb_id -1
+    }
+
+    # Close serial via spawn_id, NOT via serial_fd directly.
+    # spawn -open takes ownership of the fd -- closing serial_fd separately
+    # causes a double-close segfault when expect exits.
+    if {$serial_id != -1} {
+        catch { close -i $serial_id }
+        catch { wait -i $serial_id }
+        set serial_id -1
+        set serial_fd ""
+    }
+
+    # Close log file before sanitizing so expect releases the file handle
+    catch { log_file }
+
+    # Sanitize log: strip control characters from serial output
+    catch { exec sed -i -e {s/\r//g} -e {s/\x1b\[[0-9;]*[a-zA-Z]//g} -e {s/\x08//g} $log_path }
+
+    info_msg "Cleanup complete."
+}
+
+trap {
+    puts ""
+    warn_msg "Interrupted by user (SIGINT)."
+    cleanup
+    exit 130
+} SIGINT
+
+trap {
+    warn_msg "Terminated (SIGTERM)."
+    cleanup
+    exit 143
+} SIGTERM
+
+# ---------------------------------------------------------------------------
+# Validate required arguments 
+# ---------------------------------------------------------------------------
+
+# Vivado directory: --vivado-dir or VIVADO_INSTALL_DIR env var
+if {$vivado_dir eq ""} {
+    if {[info exists ::env(VIVADO_INSTALL_DIR)]} {
+        set vivado_dir $::env(VIVADO_INSTALL_DIR)
+    } else {
+        puts "ERROR: Vivado installation directory is required."
+        puts "       Use --vivado-dir <path> or set VIVADO_INSTALL_DIR env var."
+        puts ""
+        usage
+    }
+}
+
+set settings_sh "$vivado_dir/Vitis/settings64.sh"
+if {![file exists $settings_sh]} {
+    set settings_sh "$vivado_dir/settings64.sh"
+    if {![file exists $settings_sh]} {
+        puts "ERROR: Cannot find settings64.sh in $vivado_dir"
+        puts "       Checked: $vivado_dir/Vitis/settings64.sh"
+        puts "       Checked: $vivado_dir/settings64.sh"
+        exit 1
+    }
+}
+
+# Boot images directory: --boot-images is required
+if {$boot_images eq ""} {
+    puts "ERROR: Boot images directory is required."
+    puts "       Use --boot-images <path>."
+    puts ""
+    usage
+}
+
+if {![file isdirectory $boot_images]} {
+    puts "ERROR: Boot images directory not found: $boot_images"
+    exit 1
+}
+
+# Normalize to absolute path
+set boot_images [file normalize $boot_images]
+
+# Validate BOOT.bin
+if {![file exists "$boot_images/$boot_bin"]} {
+    puts "ERROR: $boot_bin not found in $boot_images"
+    exit 1
+}
+
+# Auto-detect OSPI image if not specified 
+if {$ospi_image eq ""} {
+    set candidates [glob -nocomplain -directory $boot_images "*ospi*.bin"]
+    if {[llength $candidates] == 1} {
+        set ospi_image [file tail [lindex $candidates 0]]
+        info_msg "Auto-detected OSPI image: $ospi_image"
+    } elseif {[llength $candidates] > 1} {
+        puts "ERROR: Multiple OSPI images found in $boot_images:"
+        foreach f $candidates { puts "         [file tail $f]" }
+        puts "       Use --ospi-image <file> to select one."
+        exit 1
+    } else {
+        puts "ERROR: No *ospi*.bin file found in $boot_images"
+        puts "       Use --ospi-image <file>."
+        exit 1
+    }
+}
+
+if {![file exists "$boot_images/$ospi_image"]} {
+    puts "ERROR: $ospi_image not found in $boot_images"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Compute flash size from actual image, rounded up to erase block boundary
+# ---------------------------------------------------------------------------
+set file_bytes [file size "$boot_images/$ospi_image"]
+if {$file_bytes == 0} {
+    puts "ERROR: $ospi_image is empty (0 bytes)"
+    exit 1
+}
+if {$file_bytes > $flash_max} {
+    puts "ERROR: $ospi_image is [expr {$file_bytes / 1048576}] MB -- exceeds 256 MB flash capacity"
+    exit 1
+}
+set flash_size [expr {(($file_bytes + $erase_block - 1) / $erase_block) * $erase_block}]
+set flash_size_hex [format "0x%X" $flash_size]
+set flash_size_mb  [format "%.1f" [expr {$flash_size / 1048576.0}]]
+info_msg "OSPI image size: $flash_size_hex ($flash_size_mb MB)"
+
+# ---------------------------------------------------------------------------
+# Auto-detect serial port
+# ---------------------------------------------------------------------------
+proc detect_serial_port {} {
+    # Use udevadm to reliably identify the VEK385 serial console.
+    # The VEK385 USB connection exposes 3 FTDI interfaces:
+    #   Interface 01 = serial console (U-Boot/Linux)
+    #   Interface 02 = debug
+    #   Interface 03 = debug
+    # We match ID_MODEL containing "VEK385" and ID_USB_INTERFACE_NUM=01.
+
+    set all_ports {}
+    set vek385_console ""
+
+    foreach dev [lsort [glob -nocomplain /dev/ttyUSB*]] {
+        set model ""
+        set iface_num ""
+        catch {
+            set udev_out [exec udevadm info -q property --name=$dev 2>/dev/null]
+            foreach line [split $udev_out "\n"] {
+                if {[regexp {^ID_MODEL=(.+)} $line -> val]} {
+                    set model $val
+                }
+                if {[regexp {^ID_USB_INTERFACE_NUM=(.+)} $line -> val]} {
+                    set iface_num $val
+                }
+            }
+        }
+        lappend all_ports [list $dev $model $iface_num]
+
+        if {[string match -nocase "*VEK385*" $model] && $iface_num eq "01"} {
+            set vek385_console $dev
+        }
+    }
+
+    if {$vek385_console ne ""} {
+        return $vek385_console
+    }
+
+    # VEK385 not found -- list what we see
+    if {[llength $all_ports] > 0} {
+        puts "  USB serial devices found (no VEK385 console detected):"
+        foreach p $all_ports {
+            puts "    [lindex $p 0]  model=[lindex $p 1]  iface=[lindex $p 2]"
+        }
+    }
+    return ""
+}
+
+if {$serial_port eq ""} {
+    set serial_port [detect_serial_port]
+    if {$serial_port eq ""} {
+        puts "ERROR: Cannot auto-detect serial port."
+        puts "       Available /dev/ttyUSB* devices:"
+        foreach d [lsort [glob -nocomplain /dev/ttyUSB*]] {
+            puts "         $d"
+        }
+        puts "       Use --serial-port <dev>."
+        exit 1
+    }
+    info_msg "Auto-detected serial port: $serial_port"
+}
+
+if {![file exists $serial_port]} {
+    puts "ERROR: Serial port $serial_port not found."
+    puts "       Check USB connection and use --serial-port if needed."
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Check serial port is not locked by another process
+# ---------------------------------------------------------------------------
+if {![catch {exec fuser $serial_port 2>/dev/null} fuser_out]} {
+    set fuser_out [string trim $fuser_out]
+    if {$fuser_out ne ""} {
+        puts "ERROR: Serial port $serial_port is in use by another process."
+        puts "       PIDs: $fuser_out"
+        puts ""
+        puts "       This is typically minicom or screen. Close it first:"
+        puts "         - minicom: Ctrl-A, then X"
+        puts "         - screen:  Ctrl-A, then K"
+        puts "         - kill:    sudo kill $fuser_out"
+        exit 1
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Enable logging
+# ---------------------------------------------------------------------------
+log_file -noappend $log_path
+
+# ---------------------------------------------------------------------------
+# Print configuration summary
+# ---------------------------------------------------------------------------
+
+puts ""
+puts "========================================================================"
+puts "  VEK385 OSPI Flash Tool"
+puts "  Automates UG1787 (Board Setup)"
+puts "========================================================================"
+puts ""
+puts "  Vivado:       $vivado_dir"
+puts "  Boot images:  $boot_images"
+puts "  BOOT.bin:     $boot_bin"
+puts "  OSPI image:   $ospi_image"
+puts "  Image size:   $flash_size_hex ($flash_size_mb MB)"
+puts "  Serial port:  $serial_port"
+puts "  XSDB port:    $xsdb_port"
+puts "  Log file:     $log_path"
+if {$dry_run} {
+    puts "  Mode:         DRY RUN (no hardware operations)"
+}
+
+# ---------------------------------------------------------------------------
+# Dry run -- validate only, no hardware 
+# ---------------------------------------------------------------------------
+if {$dry_run} {
+    step "Dry run complete -- all paths and settings validated"
+    puts ""
+    puts "  All prerequisites satisfied. Re-run without --dry-run to flash."
+    puts ""
+    exit 0
+}
+
+# Ensure all spawned process I/O is echoed to terminal
+log_user 1
+
+# --- Step 0: User confirmation ---
+wait_for_enter "Ensure SW1 DIP switch is set to JTAG mode (0000 = all ON) and board is powered ON."
+
+# ---------------------------------------------------------------------------
+# XSDB command helper with error checking
+# ---------------------------------------------------------------------------
+proc xsdb_cmd {cmd {timeout_val 30}} {
+    global xsdb_id
+    set ::spawn_id $xsdb_id
+    set ::timeout $timeout_val
+
+    send "$cmd\r"
+
+    set response ""
+    expect {
+        -re "(.*)xsdb%" {
+            set response $expect_out(1,string)
+        }
+        timeout {
+            error_exit "Timed out on XSDB command: $cmd"
+        }
+        eof {
+            error_exit "XSDB terminated during command: $cmd"
+        }
+    }
+
+    # Check for common XSDB error patterns
+    if {[regexp -nocase {error:?\s+(.+)} $response -> errmsg]} {
+        error_exit "XSDB error on '$cmd': [string trim $errmsg]"
+    }
+    if {[regexp -nocase {no targets found} $response]} {
+        error_exit "XSDB: No targets found. Is the board powered on and in JTAG mode?"
+    }
+    if {[regexp -nocase {cannot\s+connect} $response]} {
+        error_exit "XSDB: Cannot connect to board. Check USB/JTAG cable."
+    }
+
+    set trimmed [string trim $response]
+    if {$trimmed ne ""} {
+        log_write "--- XSDB: $cmd\n$trimmed"
+    } else {
+        log_write "--- XSDB: $cmd"
+    }
+
+    return $response
+}
+
+# ---------------------------------------------------------------------------
+# U-Boot command helper with response verification
+# ---------------------------------------------------------------------------
+proc uboot_cmd {cmd {timeout_val 60}} {
+    global serial_id uboot_prompt
+    set ::spawn_id $serial_id
+    set ::timeout $timeout_val
+
+    send "$cmd\r"
+
+    set response ""
+    expect {
+        -re "(.*?)($uboot_prompt)" {
+            set response $expect_out(1,string)
+        }
+        timeout {
+            error_exit "Timed out on U-Boot command: $cmd"
+        }
+    }
+
+    return $response
+}
+
+proc uboot_cmd_progress {cmd label {timeout_val 600} {interval 5}} {
+    global serial_id uboot_prompt
+    set ::spawn_id $serial_id
+
+    log_user 0
+    send "$cmd\r"
+
+    set elapsed 0
+    set response ""
+    puts -nonewline "  $label "
+    flush stdout
+
+    while {1} {
+        set ::timeout $interval
+        expect {
+            -re "(.*?)($uboot_prompt)" {
+                set response $expect_out(1,string)
+                break
+            }
+            eof {
+                puts ""
+                log_user 1
+                error_exit "Serial connection lost during: $cmd"
+            }
+            timeout {
+                incr elapsed $interval
+                if {$elapsed >= $timeout_val} {
+                    puts ""
+                    log_user 1
+                    error_exit "Timed out on U-Boot command: $cmd"
+                }
+                puts -nonewline "."
+                flush stdout
+            }
+        }
+    }
+    puts ""
+    log_user 1
+
+    log_write "$cmd\n[string trim $response]"
+
+    return $response
+}
+
+# ---------------------------------------------------------------------------
+# Step 1: Open serial port
+# ---------------------------------------------------------------------------
+step "Step 1: Opening serial port $serial_port"
+
+if {[catch {set serial_fd [open $serial_port r+]} err]} {
+    error_exit "Cannot open serial port $serial_port: $err"
+}
+fconfigure $serial_fd -mode 115200,n,8,1 \
+    -buffering none \
+    -translation binary \
+    -blocking 0
+
+spawn -open $serial_fd
+set serial_id $spawn_id
+info_msg "Serial port opened: 115200 8N1"
+
+# ---------------------------------------------------------------------------
+# Step 2: Launch XSDB
+# ---------------------------------------------------------------------------
+step "Step 2: Launching XSDB"
+
+# Disable log_file during XSDB operations to prevent interleaved output
+catch { log_file }
+
+spawn bash -c "source $settings_sh && xsdb"
+set xsdb_id $spawn_id
+
+set timeout 30
+expect {
+    "xsdb%" {
+        info_msg "XSDB started."
+    }
+    timeout {
+        error_exit "Timed out waiting for XSDB prompt."
+    }
+    eof {
+        error_exit "XSDB process terminated unexpectedly. Check Vivado installation."
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Step 3: XSDB connect and download BOOT.bin
+# ---------------------------------------------------------------------------
+step "Step 3: Connecting to board and downloading $boot_bin via JTAG"
+
+xsdb_cmd "connect"
+info_msg "Connected to hw_server."
+
+xsdb_cmd "set port $xsdb_port"
+
+xsdb_cmd "target -set -filter {name =~ \"$target_filter\"}"
+info_msg "Target selected."
+
+# Always reset the device first to ensure a clean state.
+# Without this, re-programming after a previous successful run can hang
+# because the device may still be running U-Boot or Linux.
+info_msg "Resetting device to known state..."
+catch { xsdb_cmd "dev reset" 10 }
+
+info_msg "Downloading $boot_bin (this takes ~30 seconds)..."
+xsdb_cmd "dev p $boot_images/$boot_bin" $timeout_boot
+info_msg "$boot_bin downloaded successfully."
+
+# ---------------------------------------------------------------------------
+# Step 4: Wait for U-Boot prompt on serial
+# ---------------------------------------------------------------------------
+step "Step 4: Waiting for U-Boot prompt on serial"
+
+# Re-enable log_file for serial output (clean, no XSDB interleaving)
+log_file -a $log_path
+
+set spawn_id $serial_id
+info_msg "Monitoring serial for U-Boot prompt (timeout: ${timeout_boot}s)..."
+
+# U-Boot's autoboot countdown is only 5 seconds. Reacting after the
+# "Hit any key" message appears is unreliable because the serial data
+# may already be buffered past the countdown by the time we process it.
+#
+# Instead, we detect late-stage U-Boot output (EFI/TPM messages) that
+# immediately precedes the countdown, and begin sending keystrokes
+# pre-emptively. Characters placed in the UART receive buffer before
+# autoboot checks for input will interrupt it on the first tick.
+
+set timeout $timeout_boot
+expect {
+    -re $uboot_prompt {
+        info_msg "U-Boot prompt detected."
+    }
+    -re {Missing (RNG|TPM)|Cannot persist EFI|EFI variables} {
+        info_msg "U-Boot near autoboot, sending pre-emptive keystrokes..."
+
+        set got_prompt 0
+        for {set attempt 0} {$attempt < 50} {incr attempt} {
+            send " "
+            set timeout 1
+            expect {
+                -re $uboot_prompt {
+                    set got_prompt 1
+                    break
+                }
+                "Hit any key to stop autoboot" {
+                    send " "
+                    send " "
+                    send " "
+                }
+                timeout {}
+            }
+        }
+
+        if {!$got_prompt} {
+            error_exit "Failed to interrupt U-Boot autoboot after 50 attempts."
+        }
+        info_msg "U-Boot prompt detected (autoboot interrupted)."
+    }
+    "Hit any key to stop autoboot" {
+        # Fallback for U-Boot versions with different pre-autoboot output
+        send " "
+        send " "
+        send " "
+        after 200
+        send " "
+        send " "
+        expect {
+            -re $uboot_prompt {
+                info_msg "U-Boot prompt detected (autoboot interrupted)."
+            }
+            timeout {
+                error_exit "U-Boot prompt not found after stopping autoboot."
+            }
+        }
+    }
+    timeout {
+        error_exit "Timed out waiting for U-Boot prompt on $serial_port.\n           Check that:\n           - Board is powered on\n           - DIP switch SW1 is set to JTAG (0000)\n           - Serial port $serial_port is the correct console port"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Step 5: Download OSPI image via XSDB
+# ---------------------------------------------------------------------------
+step "Step 5: Downloading OSPI image to board memory via XSDB"
+
+# Disable log_file during XSDB download
+catch { log_file }
+
+# Scale download timeout by image size (~0.7 MB/s observed, add 2x margin)
+set dow_timeout_scaled [expr {int(($file_bytes / 500000.0) + 120)}]
+if {$dow_timeout_scaled < $timeout_dow} { set dow_timeout_scaled $timeout_dow }
+info_msg "Downloading $ospi_image to 0x20000000 (this may take a minute)..."
+
+# Use dedicated download handler instead of xsdb_cmd because XSDB's progress
+# bar output contains intermediate "xsdb%" prompts that cause xsdb_cmd to
+# return before the transfer completes. Wait for the explicit "Successfully
+# downloaded" confirmation to ensure the full image is in DDR before
+# proceeding to flash.
+set spawn_id $xsdb_id
+send "dow -data $boot_images/$ospi_image 0x20000000\r"
+
+set timeout $dow_timeout_scaled
+expect {
+    -re {Successfully downloaded} {
+        # Download confirmed complete — consume trailing xsdb% prompt
+        expect -re {xsdb%} {} timeout {}
+    }
+    -re {error:?\s+(.+)} {
+        error_exit "XSDB download failed: $expect_out(1,string)"
+    }
+    timeout {
+        error_exit "XSDB download timed out after ${dow_timeout_scaled}s.\n           Image size: $flash_size_mb MB. Check JTAG connection."
+    }
+    eof {
+        error_exit "XSDB terminated during download."
+    }
+}
+
+info_msg "OSPI image downloaded to memory at 0x20000000."
+
+# ---------------------------------------------------------------------------
+# Step 6: Flash OSPI via U-Boot serial commands
+# ---------------------------------------------------------------------------
+step "Step 6: Flashing OSPI via U-Boot"
+
+# Re-enable log_file for serial output
+log_file -a $log_path
+
+# sf probe -- expect "SF: Detected" in output
+info_msg "Probing SPI flash..."
+set probe_resp [uboot_cmd "sf probe 0 0 0" $timeout_sf]
+if {[regexp -nocase {SF: Detected} $probe_resp]} {
+    info_msg "SPI flash detected."
+} else {
+    error_exit "SPI flash not detected. 'sf probe' output:\n           [string trim $probe_resp]\n           Check log: $log_path"
+}
+
+info_msg "Erasing full SPI flash (256 MB)"
+set erase_resp [uboot_cmd_progress "sf erase 0x0 0x10000000" "erasing" $timeout_flash]
+if {[regexp -nocase {Erased:?\s*OK} $erase_resp]} {
+    if {[regexp {(\d+)\s+bytes} $erase_resp -> nbytes]} {
+        info_msg "SPI flash erased successfully: $nbytes bytes."
+    } else {
+        info_msg "SPI flash erased successfully."
+    }
+} else {
+    error_exit "SPI flash erase did not confirm 'Erased: OK'.\n           Output: [string trim $erase_resp]\n           Check log: $log_path"
+}
+
+info_msg "Writing OSPI image to flash ($flash_size_mb MB)"
+set write_resp [uboot_cmd_progress "sf write 0x20000000 0x0 $flash_size_hex" "writing" $timeout_flash]
+if {[regexp -nocase {Written:?\s*OK} $write_resp]} {
+    if {[regexp {(\d+)\s+bytes} $write_resp -> nbytes]} {
+        info_msg "OSPI flash write complete: $nbytes bytes written."
+    } else {
+        info_msg "OSPI flash write complete."
+    }
+} else {
+    error_exit "SPI flash write did not confirm 'Written: OK'.\n           Output: [string trim $write_resp]\n           Check log: $log_path"
+}
+
+# ---------------------------------------------------------------------------
+# Step 7: Cleanup and user instructions
+# ---------------------------------------------------------------------------
+step "OSPI programming complete!"
+
+# Close XSDB gracefully (log_file off to avoid XSDB noise)
+catch { log_file }
+set spawn_id $xsdb_id
+send "exit\r"
+catch { expect -timeout 5 eof }
+catch { wait -i $xsdb_id }
+set xsdb_id -1
+log_write "--- XSDB: exit"
+
+# Close serial via spawn_id (spawn -open owns the fd)
+catch { close -i $serial_id }
+catch { wait -i $serial_id }
+set serial_id -1
+set serial_fd ""
+
+# Sanitize log file
+catch { log_file }
+catch { exec sed -i -e {s/\r//g} -e {s/\x1b\[[0-9;]*[a-zA-Z]//g} -e {s/\x08//g} $log_path }
+
+puts ""
+puts "  Log file: $log_path"
+puts ""
+puts "  Next steps:"
+puts "    1. Prepare the SD card (Section 2) using vek385-flash-sdcard.sh"
+puts "    2. Power OFF the board"
+puts "    3. Set SW1 DIP switch to OSPI mode (0001 = ON, ON, ON, OFF)"
+puts "    4. Power ON the board"
+puts ""
+
+exit 0

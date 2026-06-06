@@ -1,0 +1,42 @@
+{
+  "preprocess-config": {
+    "kernel-name": "image_processing:{image_processing_1}",
+    "mean-r": 123.675,
+    "mean-g": 116.28,
+    "mean-b": 103.53,
+    "scale-r": 0.017124,
+    "scale-g": 0.017507,
+    "scale-b": 0.017429,
+    "colour-format" : "RGBX",
+    "maintain-aspect-ratio" : true,
+    "resizing-type" : "PANSCAN",
+    "in-mem-bank" : 2,
+    "out-mem-bank" : 2
+  },
+  "inference-config": {
+    "model-file": "/etc/vai/models/resnet50_int8/resnet50_int8.rai",
+     "runner-options": {
+        "log-level" : "WARNING"
+     }
+  },
+  "ifms-config": [
+      {
+        "name": "input",
+        "file": "/etc/vai/models/resnet50_int8/data/classification.jpg"
+      }
+  ],
+  "postprocess-config": {
+      "topk" : 5,
+      "label-file-path" : "/etc/vai/models/resnet50_int8/data/imagenet-classes-1000.txt",
+      "type" : "SOFTMAX"
+  },
+  "metaconvert-config":{
+    "font-size" : 0.5,
+    "font" : 3,
+    "thickness" : 2,
+    "y-offset" : 0,
+    "label-color" : [
+      {"level": 1, "red" : 0, "green" : 255, "blue" : 0 }
+    ]
+  }
+}

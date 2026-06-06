@@ -1,0 +1,10 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: onnxruntime
+Description: ONNX Runtime inference engine
+Version: @version@
+Libs: -L${libdir} -lonnxruntime
+Cflags: -I${includedir}/onnxruntime/core/session

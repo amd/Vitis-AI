@@ -1,0 +1,16 @@
+{
+    "inference-config": {
+      "model-file": "/etc/vai/models/resnet50_int8/resnet50_int8.rai",
+     "runner-options": {
+          "log-level" : "WARNING",
+          "ai-analyzer-profiling" : false
+     }
+    },
+    "ifms-config": [
+     {
+       "name": "input",
+       "file": "/etc/vai/models/resnet50_int8/data/ifm_input_int8_1x224x224x4.bin"
+     }
+    ],
+    "ofms-dir" : "output"
+}

@@ -1,0 +1,29 @@
+[
+  {
+    "model_cache_path": "/etc/vai/models/yolox_m_int8/yolox_m_int8.rai",
+    "start_column": 0,
+    "aie_columns_sharing": true,
+    "ifm_node_file_map": {
+      "images": "/etc/vai/models/yolox_m_int8/data/ifm_images_int8_1x640x640x4.bin"
+    },
+    "ofm_dir": "./"
+  },
+  {
+    "model_cache_path": "/etc/vai/models/resnet50_int8/resnet50_int8.rai",
+    "start_column": 0,
+    "aie_columns_sharing": true,
+    "ifm_node_file_map": {
+      "input": "/etc/vai/models/resnet50_int8/data/ifm_input_int8_1x224x224x4.bin"
+    },
+    "ofm_dir": "./"
+  },
+  {
+    "model_cache_path": "/etc/vai/models/yolox_m_int8/yolox_m_int8.rai",
+    "start_column": 4,
+    "aie_columns_sharing": false,
+    "ifm_node_file_map": {
+      "images": "/etc/vai/models/yolox_m_int8/data/ifm_images_int8_1x640x640x4.bin"
+    },
+    "ofm_dir": "./"
+  }
+]

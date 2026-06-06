@@ -1,0 +1,622 @@
+{
+    "file": [
+        {
+            "id": 0,
+            "name": "main.c"
+        },
+        {
+            "id": 1,
+            "name": "dpu_control.c"
+        },
+        {
+            "id": 2,
+            "name": "dpu_control.h"
+        },
+        {
+            "id": 3,
+            "name": "barrier_legacy.c"
+        },
+        {
+            "id": 4,
+            "name": "barrier_sema.c"
+        },
+        {
+            "id": 5,
+            "name": "task_handler.c"
+        },
+        {
+            "id": 6,
+            "name": "wait_handle.h"
+        },
+        {
+            "id": 7,
+            "name": "queue.h"
+        },
+        {
+            "id": 8,
+            "name": "uc_dma.c"
+        },
+        {
+            "id": 9,
+            "name": "xrt_handler.c"
+        },
+        {
+            "id": 10,
+            "name": "host_queue.c"
+        },
+        {
+            "id": 11,
+            "name": "work.c"
+        },
+        {
+            "id": 12,
+            "name": "dbg_handler.c"
+        },
+        {
+            "id": 13,
+            "name": "profiling.c"
+        },
+        {
+            "id": 14,
+            "name": "trace.c"
+        },
+        {
+            "id": 15,
+            "name": "utils.c"
+        },
+        {
+            "id": 16,
+            "name": "cache.c"
+        }
+    ],
+    "log": [
+        {
+            "id": 0,
+            "name": "ERROR: save level overflow\n"
+        },
+        {
+            "id": 1, 
+            "name": "job size 0 !!\n"
+        },
+        {
+            "id": 2,
+            "name": "Invalid save page %d\n" 
+        },
+        {
+            "id": 3,
+            "name": "Invalid restore page %d\n"
+        },
+        {
+            "id": 4,
+            "name": "Invalid page %d\n"
+        },
+        {
+            "id": 5,
+            "name": "Invalid opcode: 0x%x @ %x\n" 
+        },
+        {
+            "id": 6,
+            "name": "  unfinished jobs:\n" 
+        },
+        {
+            "id": 7,
+            "name": "    job: %d state: %d pc: 0x%x\n"
+        },
+        {
+            "id": 8,
+            "name": "WARN: Deadlock might have happened!!\nLast opcode PC: 0x%x page_idx: %d\n" 
+        },
+        {
+            "id": 9,
+            "name": "ERROR: invalid restore page index: %d\n" 
+        },
+        {
+            "id": 10,
+            "name": "ERROR: page sign 0x%x\n"
+        },
+        {
+            "id": 11,
+            "name": "Exception!!\n\tESR: 0x%x EAR: 0x%x\n"
+        },
+        {
+            "id": 12,
+            "name": "Error %d initializing XIOModule!"
+        },
+        {
+            "id": 13,
+            "name": "Page-in to slot %u length 0x%x cur_save_level 0x%x\n"
+        },
+        {
+            "id": 14,
+            "name": "[preemption] job: %u\n"
+        },
+        {
+            "id": 15,
+            "name": "[block] job: %u\n"
+        },
+        {
+            "id": 16,
+            "name": "[start] job: %u\n"
+        },
+        {
+            "id": 17,
+            "name": "[launch] job: %u (%u)\n"
+        },
+        {
+            "id": 18,
+            "name": "[end] job: %u\n"
+        },
+        {
+            "id": 19,
+            "name": "[end] unfinished jobs number: %u\n"
+        },
+        {
+            "id": 20,
+            "name": "OPCODE entering barrier (id: %d slot: %d)\n"
+        },
+        {
+            "id": 21,
+            "name": "LB %u check-in\n"
+        },
+        {
+            "id": 22,
+            "name": "LB %u release\n"
+        },
+        {
+            "id": 23,
+            "name": "patch address (r%d r%d)\n"
+        },
+        {
+            "id": 24,
+            "name": "0x%x : 0x%x\n"
+        },
+        {
+            "id": 25,
+            "name": "collect trace info at offset %d\n"
+        },
+        {
+            "id": 26,
+            "name": "invalid trace control body address: 0x%x\n"
+        },
+        {
+            "id": 27,
+            "name": "pc before: %x\n"
+        },
+        {
+            "id": 28,
+            "name": "pc after: %x\n"
+        },
+        {
+            "id": 29,
+            "name": "[EOF] unfinished job number: %u\n"
+        },
+        {
+            "id": 30,
+            "name": "post save: goes to sleep !!\n"
+        },
+        {
+            "id": 31,
+            "name": "Leaving barrier: preemption point check\n"
+        },
+        {
+            "id": 32,
+            "name": "preemption skip\n"
+        },
+        {
+            "id": 33,
+            "name": "save ...\n"
+        },
+        {
+            "id": 34,
+            "name": "save 'restore page' %d offset 0x%x to handshake\n"
+        },
+        {
+            "id": 35,
+            "name": "restore ...\n"
+        },
+        {
+            "id": 36,
+            "name": "load pdi skip\n"
+        },
+        {
+            "id": 37,
+            "name": "load pdi ...\n"
+        },
+        {
+            "id": 38,
+            "name": "[TIMESTAMP][ID] %d [HIGH] %d [LOW] %d\n"
+        },
+        {
+            "id": 39,
+            "name": "load last pdi: %d ...\n"
+        },
+        {
+            "id": 40,
+            "name": "[initial] opcode: %u\n"
+        },
+        {
+            "id": 41,
+            "name": "[run] job: %u opcode: %u\n"
+        },
+        {
+            "id": 42,
+            "name": "[unblock] job: %u\n"
+        },
+        {
+            "id": 43,
+            "name": "Page-in to slot %u\n"
+        },
+        {
+            "id": 44,
+            "name": "Leaving barrier: ooo execution\n"
+        },
+        {
+            "id": 45,
+            "name": "Page-in to slot %u length 0x%x\n"
+        },
+        {
+            "id": 46,
+            "name": "Page-in to slot %u length 0x%x cur_save_level %d\n" 
+        },
+        {
+            "id": 47,
+            "name": "Partition: [%u, %u], self = %u\n"
+        },
+        {
+            "id": 48,
+            "name": "Log buffer: [0x%x 0x%x]\n"
+        },
+        {
+            "id": 49,
+            "name": "size = 0x%x, id: %d\n"
+        },
+        {
+            "id": 50,
+            "name": "tct %x fsl %x\n"
+        },
+        {
+            "id": 51,
+            "name": "tct %x tlast = %x\n"
+        },
+        {
+            "id": 52,
+            "name": "push to full queue !!\n"
+        },
+        {
+            "id": 53,
+            "name": "pop from empty queue !!\n"
+        },
+        {
+            "id": 54,
+            "name": "do_exec_buf\n"
+        },
+        {
+            "id": 55,
+            "name": "executing control code ...\n"
+        },
+        {
+            "id": 56,
+            "name": "Queue packet opcode: %u\n"
+        },
+        {
+            "id": 57,
+            "name": "HSA queue empty, MB goes to sleep !\n"
+        },
+        {
+            "id": 58,
+            "name": "ISR: %x\n"
+        },
+        {
+            "id": 59,
+            "name": "Leaving barrier (pre-work) uc = %d\n"
+        },
+        {
+            "id": 60,
+            "name": "lead: handle packet\n"
+        },
+        {
+            "id": 61,
+            "name": "Leaving barrier (post-work) uc = %d\n"
+        },
+        {
+            "id": 62,
+            "name": "Entering barrier (post-no_work) uc = %d\n"
+        },
+        {
+            "id": 63,
+            "name": "slave %d: handle packet\n"
+        },
+        {
+            "id": 64,
+            "name": "Leaving barrier (post-work) uc = %d\n" 
+        },
+        {
+            "id": 65,
+            "name": "illegal partition setting\n"
+        },
+        {
+            "id": 66,
+            "name": "Distributing work to uc %u via BD %u\n"
+        },
+        {
+            "id": 67,
+            "name": "Work distributed to extra %u uCs\n"
+        },
+        {
+            "id": 68,
+            "name": "handle dbg queue...\n"
+        },
+        {
+            "id": 69,
+            "name": "DBG queue packet opcode: %u\n"
+        },
+        {
+            "id": 70,
+            "name": "do_dbg_rw\n"
+        },
+        {
+            "id": 71,
+            "name": "Page-in to slot %u page offset 0x%x\n"
+        },
+        {
+            "id": 72,
+            "name": "cur_save_level 0x%x\n"
+        }, 
+        {
+            "id": 73,
+            "name": "[TIMESTAMP][ID] %d\n"
+        }, 
+        {
+            "id": 74,
+            "name": "[HIGH] %d [LOW] %d\n"
+        }, 
+        {
+            "id": 75,
+            "name": "    job: %d state: %d\n"
+        }, 
+        {
+            "id": 76,
+            "name": "pc: 0x%x\n"
+        }, 
+        {
+            "id": 77,
+            "name": "Page-in to slot %u length 0x%x\n"
+        }, 
+        {
+            "id": 78,
+            "name": "cur_save_level %d\n"
+        }, 
+        {
+            "id": 79,
+            "name": "Exception!!\n\tESR: 0x%x EAR: 0x%x\n"
+        }, 
+        {
+            "id": 80,
+            "name": "PC: 0x%x\n"
+        }, 
+        {
+            "id": 81,
+            "name": "Partition: [%u, %u]\n"
+        }, 
+        {
+            "id": 82,
+            "name": "self = %u\n"
+        }, 
+        {
+            "id": 83,
+            "name": "Waken up after preempted?\n"
+        }, 
+        {
+            "id": 84,
+            "name": "prefetch load last elf: %d ...\n"
+        }, 
+        {
+            "id": 85,
+            "name": "Page-in last elf to slot %u\n"
+        }, 
+        {
+            "id": 86,
+            "name": "load elf skip\n"
+        }, 
+        {
+            "id": 87,
+            "name": "load elf ...\n"
+        }, 
+        {
+            "id": 88,
+            "name": "fw_state before hang is detected: 0x%x\n" 
+        },
+        {
+            "id": 89,
+            "name": "qh: 0x%x ql: 0x%x\n" 
+        },
+        {
+            "id": 90,
+            "name": "mpnpu base time: high 0x%x low 0x%x\n"
+        },
+        {
+            "id": 91,
+            "name": "shim dma mm2s status: addr 0x%x value 0x%x\n"
+        },
+        {
+            "id": 92,
+            "name": "shim dma s2mm status: addr 0x%x value 0x%x\n"
+        },
+        {
+            "id": 93,
+            "name": "memtile dma mm2s status: addr 0x%x value 0x%x\n"
+        },
+        {
+            "id": 94,
+            "name": "memtile dma s2mm status: addr 0x%x value 0x%x\n"
+        },
+        {
+            "id": 95,
+            "name": "core memory module dma mm2s status: addr 0x%x value 0x%x\n"
+        },
+        {
+            "id": 96,
+            "name": "core memory module dma s2mm status: addr 0x%x value 0x%x\n"
+        },
+        {
+            "id": 97,
+            "name": "core status: addr 0x%x value 0x%x\n"
+        },
+        {
+            "id": 98,
+            "name": "core pc: addr 0x%x value 0x%x\n"
+        },
+        {
+            "id": 99,
+            "name": "load elf cp skip\n"
+        }, 
+        {
+            "id": 100,
+            "name": "load elf cp ...\n"
+        },
+        {
+            "id": 101,
+            "name": "break early same page ...\n"
+        },
+        {
+            "id": 102,
+            "name": "break early new page ...\n"
+        },
+        {
+            "id": 103,
+            "name": "load elf cp poff: 0x%x\n"
+        },
+        {
+            "id": 104,
+            "name": "preempt prefetch job skipped\n"
+        },
+        {
+            "id": 105,
+            "name": "offset 0x%x: 0x%x\n"
+        },
+        {
+            "id": 106,
+            "name": "Handshake dump:\n"
+        },
+        {
+            "id": 107,
+            "name": "hw uncorrectable error caught\n"
+        },
+        {
+            "id": 108,
+            "name": "hw correctable error caught\n"
+        },
+        {
+            "id": 109,
+            "name": "axi error caught\n"
+        },
+        {
+            "id": 110,
+            "name": "%d cmds queued in current check\n"
+        },
+        {
+            "id": 111,
+            "name": "handle slot %d , subcmd id in runlist: %d\n"
+        },
+        {
+            "id": 112,
+            "name": "update completion\n"
+        },
+        {
+            "id": 113,
+            "name": "ATOMICS update read_idx by %d\n"
+        },
+        {
+            "id": 114,
+            "name": "cache hit for address 0x%x:0x%x\n"
+        },
+        {
+            "id": 115,
+            "name": "cache miss for address 0x%x:0x%x\n"
+        },
+        {
+            "id": 116,
+            "name": "update read_idx by %d\n"
+        },
+        {
+            "id": 117,
+            "name": "lead: handle packet. chain_flag: %d\n"
+        },
+        {
+            "id": 118,
+            "name": "q new write index high %d : low %d\n"
+        },
+        {
+            "id": 119,
+            "name": "q new read index high %d : low %d\n"
+        },
+        {
+            "id": 120,
+            "name": "q old write index high %d : low %d\n"
+        },
+        {
+            "id": 121,
+            "name": "q old read index high %d : low %d\n"
+        },
+        {
+            "id": 122,
+            "name": "Trigger completion interrupt\n"
+        },
+        {
+            "id": 123,
+            "name": "Trigger idle interrupt\n"
+        },
+        {
+            "id": 124,
+            "name": "Trigger miscellaneous interrupt\n"
+        },
+        {
+            "id": 125,
+            "name": "Trigger common interrupt\n"
+        },
+        {
+            "id": 126,
+            "name": "Skip %d cmds in runlist\n"
+        },
+        {
+            "id": 127,
+            "name": "Leaving barrier: end job\n"
+        },
+        {
+            "id": 128,
+            "name": "break early same page same job\n"
+        },
+        {
+            "id": 129,
+            "name": "load pdi id %d at page index %d\n"
+        },
+        {
+            "id": 130,
+            "name": "load axi-mm elf id %d at page index %d\n"
+        },
+        {
+            "id": 131,
+            "name": "load cp elf id %d in page %d\n"
+        },
+        {
+            "id": 132,
+            "name": "out of order page-in page %d\n"
+        },
+        {
+            "id": 133,
+            "name": "in order page-in page %d\n"
+        },
+        {
+            "id": 134,
+            "name": "save level page-in page %d\n"
+        },
+        {
+            "id": 135,
+            "name": "load last pdi id %d at page index %d\n"
+        },
+        {
+            "id": 136,
+            "name": "\n"
+        }
+    ]
+}

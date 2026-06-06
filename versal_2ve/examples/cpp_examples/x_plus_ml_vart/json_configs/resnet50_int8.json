@@ -1,0 +1,28 @@
+{
+  "preprocess-config": {
+    "mean-r": 123.675,
+    "mean-g": 116.28,
+    "mean-b": 103.53,
+    "scale-r": 0.017124,
+    "scale-g": 0.017507,
+    "scale-b": 0.017429,
+    "colour-format" : "RGBX",
+    "maintain-aspect-ratio" : true,
+    "resizing-type" : "PANSCAN",
+    "in-mem-bank" : 2,
+    "out-mem-bank" : 2,
+    "quant-scale-factor" : 32.0
+  },
+  "inference-config": {
+    "model-file": "/etc/vai/models/resnet50_int8/resnet50_int8.rai",
+     "runner-options": {
+        "log-level" : "WARNING"
+     }
+  },
+  "ifms-config": [
+      {
+        "name": "input",
+        "file": "/etc/vai/models/resnet50_int8/data/ifm_input_int8_1x224x224x4.bin"
+      }
+  ]
+}

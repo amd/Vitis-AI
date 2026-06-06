@@ -1,0 +1,10 @@
+  &{/reserved-memory} {
+		
+		buffer@50000000000 {
+			reg = <0x500 0x00000000 0x01 0x00000000>;
+			compatible = "shared-dma-pool";
+			reusable;
+			linux,cma-default;
+		};
+
+  };

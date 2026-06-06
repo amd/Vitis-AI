@@ -1,0 +1,64 @@
+From 22ee3ee2b564f40a71767fe7e135fc923b38e62e Mon Sep 17 00:00:00 2001
+From: Gregory Williams <gregory.williams@amd.com>
+Date: Tue, 24 Mar 2026 13:33:18 -0700
+Subject: [AIENGINE PATCH V2 2/2] driver: src: perfcnt: Support higher number of
+ perf counts in aie2ps
+
+This change leverages the new PerfMod changes to support higher
+performance counter counts for both shim tiles and core tile memory
+modules in aie2ps
+
+Signed-off-by: Gregory Williams <gregory.williams@amd.com>
+---
+ driver/src/perfcnt/xaie_perfcnt.c | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/driver/src/perfcnt/xaie_perfcnt.c b/driver/src/perfcnt/xaie_perfcnt.c
+index d9faff73..783884d7 100644
+--- a/driver/src/perfcnt/xaie_perfcnt.c
++++ b/driver/src/perfcnt/xaie_perfcnt.c
+@@ -260,7 +260,9 @@ AieRC XAie_PerfCounterControlSet(XAie_DevInst *DevInst, XAie_LocType Loc,
+ 
+ 	/* Get offset address based on Counter */
+ 	RegOffset = PerfMod->PerfCtrlBaseAddr +
+-				(Counter / 2U * PerfMod->PerfCtrlOffsetAdd);
++				((Counter / 2U) * PerfMod->PerfCtrlOffsetAdd) +
++				((Counter / 2U) ? PerfMod->PerfCtrlOffsetGap : 0U);
++
+ 	/* Compute mask for performance control register */
+ 	FldMask = (PerfMod->Start.Mask | PerfMod->Stop.Mask) <<
+ 				(PerfMod->StartStopShift * (Counter % 2U));
+@@ -301,7 +303,7 @@ AieRC XAie_PerfCounterResetControlSet(XAie_DevInst *DevInst, XAie_LocType Loc,
+ 		XAie_ModuleType Module, u8 Counter,
+ 		XAie_Events ResetEvent)
+ {
+-	u32 ResetRegOffset, ResetFldVal, ResetFldMask;
++	u32 ResetRegOffset, ResetFldVal, ResetFldMask, CounterIdx;
+ 	u64 ResetRegAddr;
+ 	u8 TileType;
+ 	u16 IntResetEvent;
+@@ -351,15 +353,17 @@ AieRC XAie_PerfCounterResetControlSet(XAie_DevInst *DevInst, XAie_LocType Loc,
+ 	}
+ 
+ 	/* Get offset address based on Counter */
+-	ResetRegOffset = PerfMod->PerfCtrlResetBaseAddr;
++	ResetRegOffset = PerfMod->PerfCtrlResetBaseAddr +
++				((Counter / 2U) * PerfMod->PerfCtrlOffsetAdd);
+ 
+ 	/* Compute mask for performance control register */
++	CounterIdx = Counter % PerfMod->PerfCtrlResetPerReg;
+ 	ResetFldMask = PerfMod->Reset.Mask <<
+-					(PerfMod->ResetShift * (Counter));
++					(PerfMod->ResetShift * CounterIdx);
+ 	/* Compute value to be written to the performance control register */
+ 	ResetFldVal = XAie_SetField(IntResetEvent,
+-		PerfMod->Reset.Lsb + (PerfMod->ResetShift * Counter),
+-		PerfMod->Reset.Mask << (PerfMod->ResetShift * Counter));
++		PerfMod->Reset.Lsb + (PerfMod->ResetShift * CounterIdx),
++		PerfMod->Reset.Mask << (PerfMod->ResetShift * CounterIdx));
+ 
+ 	/* Compute absolute address and write to register */
+ 	ResetRegAddr = XAie_GetTileAddr(DevInst, Loc.Row, Loc.Col) +
+-- 
+2.34.1
+
