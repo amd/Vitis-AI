@@ -38,7 +38,6 @@ add_files -norecurse $project_name.srcs/sources_1/bd/bd/bd.bd
 
 # Ignore the CED’s imported golden NCR
 # Let Vivado generate a fresh NoC solution during impl_1 for the modified platform
-set_property is_enabled false [get_files  ./example_design.srcs/utils_1/imports/golden_ncr/vek385_revb_6280184_0xc546f4d8.ncr]
 set_property NOC_SOLUTION_FILE "" [get_runs impl_1]
 
 #Overwrite the default rtl simulations models with tlm
