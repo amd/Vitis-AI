@@ -130,10 +130,8 @@ filenames encode the model index and iteration count.
 
 | Scenario | Output Filename(s) |
 | -------- | ------------------ |
-| Single run, 1 model | `postproc0_overlay.jpg` |
-| Single run, 2 models | `postproc0_overlay.jpg` · `postproc1_overlay.jpg` |
-| Multiple runs, 1 model | `iter0_postproc0_overlay.jpg` · `iter1_postproc0_overlay.jpg` … |
-| Multiple runs, 2 models | `iter0_postproc0_overlay.jpg` · `iter0_postproc1_overlay.jpg` … |
+| Single run | `postproc0_overlay.jpg` · `postproc1_overlay.jpg` |
+| Multiple runs | `iter_0_postproc0_overlay.jpg` · `iter_0_postproc1_overlay.jpg` … |
 
 **Note:** When **`--log-level`** is set to `3` or higher, prediction results
 are also printed to the console.
