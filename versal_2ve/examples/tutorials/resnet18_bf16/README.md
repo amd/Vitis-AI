@@ -55,13 +55,6 @@ docker run -it --network host \
   -v $PWD/resnet18_bf16:/resnet18_bf16 \  
   --rm vitis_ai_2ve_docker:release_v6.2  "bash"
 ```
-
-Inside the docker, setup environment using following steps:
-
-```bash
-source /opt/xilinx/arm_env.bash
-```
-
 ## Vitis AI Compilation & Deployment Flow
 
 1. Inside the docker, change directory to the tutorial folder, install python packages required by the example, and export the ResNet-18 ONNX model:

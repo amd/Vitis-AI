@@ -66,12 +66,6 @@ docker run -it --network host \
   -v $PWD/resnet50_quark:/resnet50_quark \  
   --rm vitis_ai_2ve_docker:release_v6.2  "bash"
 ```
-
-Inside the docker, setup environment using following steps:
-
-```bash
-source /opt/xilinx/arm_env.bash
-```
 ## Evaluate the Float Model Accuracy with ImageNet Dataset
 
 Evaluate the float model accuracy before quantization and deployment:

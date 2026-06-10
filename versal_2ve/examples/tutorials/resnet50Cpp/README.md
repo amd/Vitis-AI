@@ -82,13 +82,6 @@ docker run -it --network host \
   -v $PWD/resnet50Cpp:/resnet50Cpp \  
   --rm vitis_ai_2ve_docker:release_v6.2  "bash"
 ```
-
-Inside the docker, set up the environment using the following step:
-
-```bash
-source /opt/xilinx/arm_env.bash
-```
-
 ### Model Compilation
 
 Compile the resnet50 ONNX model `models/resnet50-v1-12.onnx` for the NPU.
@@ -323,10 +316,9 @@ docker run -it -p 8011:8011 --network host \
   --rm vitis_ai_2ve_docker:release_v6.2 "bash"
 ```
 
-Inside docker, initialize environment and launch AI Analyzer:
+Inside docker, launch AI Analyzer:
 
 ```BASH
-root@019935d3026b:/home# source /opt/xilinx/arm_env.bash
 root@019935d3026b:/home# aianalyzer --port 8011 --no-browser --bind 0.0.0.0 /resnet50Cpp
 ```
 
