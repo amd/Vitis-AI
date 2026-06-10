@@ -73,13 +73,6 @@ docker run -it --network host \
   --rm vitis_ai_2ve_docker:release_v6.2
    "bash"
 ```
-
-Inside the docker, setup environment using following steps:
-
-```bash
-source /opt/xilinx/arm_env.bash
-```
-
 ### Install Required Python Packages
 
 Inside the docker, install the required python packages:
