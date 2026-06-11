@@ -971,7 +971,7 @@ class app_context {
 
       std::cout << "\n--- Model info ---\n";
       std::cout << "Model file        : " << m_runner_opt.model_cache_dir << "\n";
-      std::cout << "Batch size : " << m_batch_size << "\n";
+      std::cout << "Batch size : " << m_runner->get_batch_size() << "\n";
       print_tensor_list("Inputs", cpu_inputs, hw_input_idx);
       std::cout << "\n";
       print_tensor_list("Outputs", cpu_outputs, hw_output_idx);
