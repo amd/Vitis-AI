@@ -113,6 +113,7 @@ The tables below are the reference overview:
 | **Overlay / visualization** | | | ✓ | ✓ | ✓ | | | | |
 | **Zero-copy / HW tensor** | | ✓ | | ✓ | | ✓ | | | |
 | **Mixed precision** | | ✓ | | ✓ | | | | | |
+| **CPU partition** | | ✓ | | | | | | | |
 | **Async inference API** | | ✓ | | | | | | | ✓ |
 
 #### Feature descriptions
@@ -132,4 +133,5 @@ The tables below are the reference overview:
 | **Overlay / visualization** | On-frame labels or meta-convert style output where applicable |
 | **Zero-copy / HW tensor** | Runner or pipeline options for HW-backed tensors where the stack exposes it |
 | **Mixed precision** | Compilation option to strategically apply different numerical precisions across model operations. |
+| **CPU partition** | Compiler splits the graph across NPU and CPU. |
 | **Async inference API** | Non-blocking inference API demonstration |
