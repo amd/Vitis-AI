@@ -22,7 +22,7 @@ do_configure() {
     find "${LOCAL_DIR}" -type f -name "*.whl" -exec rm -f {} \;
 
     bbnote "Downloading vart-x wheel from ${PYPI_AMD_VAI_INDEX}"
-    ${PIP} download --no-deps --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
+    ${PIP} download --no-deps --no-cache-dir --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
         -d "${LOCAL_DIR}" \
         vart-x
 

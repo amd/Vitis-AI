@@ -39,12 +39,12 @@ do_configure() {
   find "${LOCAL_DIR}" -type f -name "*.whl" -exec rm -f {} \;
 
   bbnote "Downloading onnxruntime-vitisai and voe wheels from ${PYPI_AMD_VAI_INDEX}"
-  ${PIP} download --no-deps --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
+  ${PIP} download --no-deps --no-cache-dir --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
     -d "${LOCAL_DIR}" \
     onnxruntime-vitisai voe
 
   bbnote "Downloading flexmlrt wheel for linux_aarch64 from ${PYPI_AMD_VAI_INDEX}"
-  ${PIP} download --platform linux_aarch64 --no-deps --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
+  ${PIP} download --platform linux_aarch64 --no-deps --no-cache-dir --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
     -d "${LOCAL_DIR}" \
     flexmlrt
 
