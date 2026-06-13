@@ -9,7 +9,7 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
 # Vitis AI for Versal AI Edge Series Gen 2
 
-Repository content for **Vitis AI 6.2** on the **AMD Versal AI Edge Series Gen 2** device series. For installation, board bringup, release notes, and user guides, see the [Vitis AI documentation portal](https://vitisai.docs.amd.com/).
+Repository content for **Vitis AI 6.2** on the **AMD Versal AI Edge Series Gen 2** device series. For installation, board bringup, release notes, and user guides, see the [Vitis AI documentation portal](https://vitisai.docs.amd.com/projects/gen2/en/latest/index.html).
 
 ## Contents
 
