@@ -9,7 +9,7 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
 # Vitis AI for Versal AI Edge Series
 
-At time of the VAI 6.2 release, the **AMD Versal AI Edge Series** device series support and installation instructions are available at [`https://vitisai.docs.amd.com`](https://vitisai.docs.amd.com/en/latest/docs/quickstart/install.html). Going forward, this GitHub repository folder will contain:
+At time of the VAI 6.2 release, the **AMD Versal AI Edge Series** device series support and installation instructions are available at [`Vitis AI documentation`](https://vitisai.docs.amd.com/projects/gen1/en/latest/index.html). Going forward, this GitHub repository folder will contain:
 
 - Example applications (C++ and Python)
 - Tutorials
