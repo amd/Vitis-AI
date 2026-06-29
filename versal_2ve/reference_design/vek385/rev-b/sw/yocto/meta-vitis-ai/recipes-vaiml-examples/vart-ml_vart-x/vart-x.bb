@@ -4,6 +4,7 @@ LICENSE = "CLOSED"
 S = "${WORKDIR}"
 LOCAL_DIR = "${WORKDIR}/wheels"
 PYPI_AMD_VAI_INDEX = "https://pypi.amd.com/vai/6.2/simple"
+VART_X_WHEEL_CACHE = "${DL_DIR}/vart-x-wheels"
 
 inherit python3native
 
@@ -13,23 +14,34 @@ INSANE_SKIP:pn-vart-x = "all"
 do_package_qa[noexec] = "1"
 EXCLUDE_FROM_SHLIBS = "1"
 
-do_configure[network] = "1"
+do_fetch[network] = "1"
+do_fetch[depends] += "python3-pip-native:do_populate_sysroot"
 
-do_configure() {
+do_fetch() {
     PIP="${STAGING_BINDIR_NATIVE}/python3-native/python3 -m pip"
 
+    install -d "${VART_X_WHEEL_CACHE}"
+
+    if ! ls ${VART_X_WHEEL_CACHE}/vart_x*.whl >/dev/null 2>&1; then
+        bbnote "Downloading vart-x wheel from ${PYPI_AMD_VAI_INDEX}"
+        ${PIP} download --no-deps --no-cache-dir \
+            --index-url "${PYPI_AMD_VAI_INDEX}" \
+            -d "${VART_X_WHEEL_CACHE}" \
+            vart-x
+    else
+        bbnote "Using cached vart-x wheel from ${VART_X_WHEEL_CACHE}"
+    fi
+
+    if ! ls ${VART_X_WHEEL_CACHE}/vart_x*.whl >/dev/null 2>&1; then
+        bbfatal "Failed to download vart-x wheel from ${PYPI_AMD_VAI_INDEX}"
+    fi
+}
+
+do_configure() {
     install -d "${LOCAL_DIR}"
     find "${LOCAL_DIR}" -type f -name "*.whl" -exec rm -f {} \;
-
-    bbnote "Downloading vart-x wheel from ${PYPI_AMD_VAI_INDEX}"
-    ${PIP} download --no-deps --no-cache-dir --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
-        -d "${LOCAL_DIR}" \
-        vart-x
-
-    if ! ls ${LOCAL_DIR}/*.whl >/dev/null 2>&1; then
-        bberror "No vart-x wheel found in ${LOCAL_DIR}"
-        exit 1
-    fi
+    cp ${VART_X_WHEEL_CACHE}/vart_x*.whl ${LOCAL_DIR}/
+    bbnote "Using vart-x wheel: $(ls ${LOCAL_DIR}/*.whl)"
 }
 
 do_install() {

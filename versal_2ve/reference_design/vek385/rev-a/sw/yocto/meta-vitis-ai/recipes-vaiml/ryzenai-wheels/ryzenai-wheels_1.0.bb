@@ -12,6 +12,7 @@ LIC_FILES_CHKSUM = "\
 S = "${WORKDIR}"
 LOCAL_DIR="${WORKDIR}/wheels"
 PYPI_AMD_VAI_INDEX = "https://pypi.amd.com/vai/6.2/simple"
+RYZENAI_WHEEL_CACHE = "${DL_DIR}/ryzenai-wheels"
 
 inherit python3native
 
@@ -29,36 +30,53 @@ EXCLUDE_FROM_SHLIBS = "1"
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
 
+do_fetch[network] = "1"
+do_fetch[depends] += "python3-pip-native:do_populate_sysroot"
 
-do_configure[network] = "1"
-
-do_configure() {
+do_fetch() {
   PIP="${STAGING_BINDIR_NATIVE}/python3-native/python3 -m pip"
 
+  install -d "${RYZENAI_WHEEL_CACHE}"
+
+  if ! ls ${RYZENAI_WHEEL_CACHE}/onnxruntime_vitisai*.whl >/dev/null 2>&1 || \
+     ! ls ${RYZENAI_WHEEL_CACHE}/voe*.whl >/dev/null 2>&1; then
+    bbnote "Downloading onnxruntime-vitisai and voe wheels from ${PYPI_AMD_VAI_INDEX}"
+    ${PIP} download --no-deps --no-cache-dir \
+      --index-url "${PYPI_AMD_VAI_INDEX}" \
+      -d "${RYZENAI_WHEEL_CACHE}" \
+      onnxruntime-vitisai voe
+  else
+    bbnote "Using cached onnxruntime-vitisai and voe wheels from ${RYZENAI_WHEEL_CACHE}"
+  fi
+
+  if ! ls ${RYZENAI_WHEEL_CACHE}/flexmlrt*.whl >/dev/null 2>&1; then
+    bbnote "Downloading flexmlrt wheel for linux_aarch64 from ${PYPI_AMD_VAI_INDEX}"
+    ${PIP} download --platform linux_aarch64 --no-deps --no-cache-dir \
+      --index-url "${PYPI_AMD_VAI_INDEX}" \
+      -d "${RYZENAI_WHEEL_CACHE}" \
+      flexmlrt
+  else
+    bbnote "Using cached flexmlrt wheel from ${RYZENAI_WHEEL_CACHE}"
+  fi
+
+  if ! ls ${RYZENAI_WHEEL_CACHE}/*.whl >/dev/null 2>&1; then
+    bbfatal "Failed to download wheels from ${PYPI_AMD_VAI_INDEX}"
+  fi
+}
+
+do_configure() {
   install -d "${LOCAL_DIR}"
   find "${LOCAL_DIR}" -type f -name "*.whl" -exec rm -f {} \;
+  cp ${RYZENAI_WHEEL_CACHE}/*.whl ${LOCAL_DIR}/
 
-  bbnote "Downloading onnxruntime-vitisai and voe wheels from ${PYPI_AMD_VAI_INDEX}"
-  ${PIP} download --no-deps --no-cache-dir --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
-    -d "${LOCAL_DIR}" \
-    onnxruntime-vitisai voe
+  for whl in "${LOCAL_DIR}/"*.whl; do
+    new_name=$(echo "$whl" | sed 's/linux_aarch64/any/')
+    if [ "$whl" != "$new_name" ]; then
+      mv "$whl" "$new_name"
+    fi
+  done
 
-  bbnote "Downloading flexmlrt wheel for linux_aarch64 from ${PYPI_AMD_VAI_INDEX}"
-  ${PIP} download --platform linux_aarch64 --no-deps --no-cache-dir --extra-index-url "${PYPI_AMD_VAI_INDEX}" \
-    -d "${LOCAL_DIR}" \
-    flexmlrt
-
-  if ls ${LOCAL_DIR}/*.whl >/dev/null 2>&1; then
-    for whl in "${LOCAL_DIR}/"*.whl; do
-      new_name=$(echo "$whl" | sed 's/linux_aarch64/any/')
-      if [ "$whl" != "$new_name" ]; then
-        mv "$whl" "$new_name"
-      fi
-    done
-  else
-    bberror "No .whl files found in ${LOCAL_DIR}"
-    exit 1
-  fi
+  bbnote "Wheels ready in ${LOCAL_DIR}: $(ls ${LOCAL_DIR}/*.whl)"
 }
 
 do_install () {
