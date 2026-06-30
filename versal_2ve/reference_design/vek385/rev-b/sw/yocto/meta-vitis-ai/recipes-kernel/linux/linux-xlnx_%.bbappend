@@ -16,3 +16,4 @@ SRC_URI:append = " file://0001-xilinx-ai-engine-fix-UC-AXIMM-transaction-timeout
 SRC_URI:append = " file://0001-xilinx-ai-engine-Protect-AXI-MM-access-during-reset-.patch"
 SRC_URI:append = " file://0001-xilinx-ai-engine-Protect-AXI-MM-access-during-reset-coredump-fix.patch"
 SRC_URI:append = " file://0004-xilinx-ai-engine-Replace-udelay-with-usleep_range-in.patch"
+SRC_URI:append = " file://0001-xilinx-ai-engine-Granularize-error-handling-init-options.patch"
