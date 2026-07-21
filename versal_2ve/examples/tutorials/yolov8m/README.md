@@ -1,9 +1,4 @@
-<table class="sphinxhide" width="100%">
- <tr width="100%">
-    <td align="center"><img src="https://raw.githubusercontent.com/Xilinx/Image-Collateral/main/xilinx-logo.png" width="30%"/><h1> YOLOv8m Object Detection: Quantization to Deployment</h1>
-    </td>
- </tr>
-</table>
+# YOLOv8m Object Detection: Quantization to Deployment
 
 This tutorial outlines the essential steps for deploying the YOLOv8m model on AMD Versal AI Edge Series Gen 2 VEK385 Evaluation Kit
 using Vitis AI 6.2, while leveraging the mixed-precision capabilities of the Vitis AI compiler.
@@ -19,7 +14,7 @@ for ONNX Runtime, ensuring robust and seamless operation on the VEK385 evaluatio
 
 This tutorial requires:
 
-* Latest Vitis AI Docker for Versal AI Edge Series Gen 2:
+* Vitis AI 6.2 Docker for Versal AI Edge Series Gen 2:
     * Instructions for installation and startup are in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
 * VEK385 evaluation kit (see above):
     * Setup instructions are available in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
@@ -52,8 +47,27 @@ Before starting Docker, adjust the access permissions of the working directories
 chmod -R a+w <path/to/yolov8m>
 ```
 
-Load the latest docker image and launch it as explained in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
+Pull the docker image: 
 
+```
+docker pull amdih/vitis-ai:versal-2ve-release_v6.2_0612
+```
+
+Run `docker images` to verify docker REPOSITORY, IMAGEID and TAG information. 
+
+|REPOSITORY          | TAG                            | IMAGE ID          | CREATED       | SIZE   |
+|--------------------|--------------------------------|-------------------|---------------|--------|
+|amdih/vitis-ai      |versal-2ve-release_v6.2_0612    |  8cd54102c274     |  xx hours ago | 31.2GB |
+
+Start the docker: 
+
+```
+docker run -it --network host \  
+  -v /path/to/your/license:/usr/licenses \  
+  -v $PWD/yolov8m:/yolov8m \  
+  --rm amdih/vitis-ai:versal-2ve-release_v6.2_0612 \
+   "bash"
+```
 
 ### Install Required Python Packages
 
@@ -182,6 +196,12 @@ After quantization finishes, compile the model.
 ### Model Compilation
 Compile the above VINT8 ONNX model ``models/yolov8m_VINT8_skipNodes.onnx`` for the NPU.
 
+```bash
+python3 compile.py
+```
+
+The compilation uses the following configuration:
+
 ```
 provider_options_dict = {
         "config_file": "vitisai_config.json",
@@ -308,7 +328,7 @@ Use ``evaluate.py`` script to run evaluation on 5k COCO dataset. The python scri
 * ``cpu-int8-fp32``: To evaluate VINT8-FP32 quantized ONNX model on CPU using ``CPUExecutionProvider``
 
     ```bash
-    python3 evaluate.py --model models/yolov8m_VINT8_skipNodes.onnx --coco_dataset datasets/coco --device cpu-int8
+    python3 evaluate.py --model models/yolov8m_VINT8_skipNodes.onnx --coco_dataset datasets/coco --device cpu-int8-fp32
     ```
 
 * ``npu-bf16``: To evaluate Vitis AI compiled BF16 model on VEK385 NPU using ``VitisAIExecutionProvider`` provided appropriate ``--cache_dir`` and ``--cache_key``
@@ -344,30 +364,30 @@ Use ``evaluate.py`` script to run evaluation on 5k COCO dataset. The python scri
 <tr>
 <td>FP32 CPU</td>
 <td>Original FP32 ONNX model, evaluation on CPU</td>
-<td style="text-align: center">48.0843</td>
-<td style="text-align: center">65.1921</td>
-<td style="text-align: center">51.6791</td>
-</tr>
-<tr>
-<td>VINT8-FP32 CPU</td>
-<td>FP32 model quantized to VINT8 with VINT8 head and FP32 tail, evaluation on CPU</td>
-<td style="text-align: center">46.7227</td>
-<td style="text-align: center">64.4694</td>
-<td style="text-align: center">50.5399</td>
+<td style="text-align: center">49.95</td>
+<td style="text-align: center">67.02</td>
+<td style="text-align: center">53.97</td>
 </tr>
 <tr>
 <td>BF16 NPU</td>
 <td>FP32 ONNX model compiled to BF16, evaluation on VEK385 NPU</td>
-<td style="text-align: center">46.1114</td>
-<td style="text-align: center">63.9787</td>
-<td style="text-align: center">49.8143</td>
+<td style="text-align: center">50.29</td>
+<td style="text-align: center">67.66</td>
+<td style="text-align: center">54.65</td>
+</tr>
+<tr>
+<td>VINT8-FP32 CPU</td>
+<td>FP32 model quantized to VINT8 with VINT8 head and FP32 tail, evaluation on CPU</td>
+<td style="text-align: center">48.75</td>
+<td style="text-align: center">66.28</td>
+<td style="text-align: center">53.12</td>
 </tr>
 <tr>
 <td>VINT8-BF16 NPU</td>
 <td>VINT8-FP32 quantized model compiled to VINT8-BF16, evaluation on VEK385 NPU</td>
-<td style="text-align: center">44.0326</td>
-<td style="text-align: center">62.3832</td>
-<td style="text-align: center">47.7017</td>
+<td style="text-align: center">48.38</td>
+<td style="text-align: center">66.12</td>
+<td style="text-align: center">52.68</td>
 </tr>
 </tbody>
 </table>         
@@ -408,7 +428,7 @@ Once the JSON files are generated, launch AI Analyzer using steps below.
 docker run -it -p 8011:8011 --network host \
   -v /path/to/your/license:/usr/licenses \
   -v $PWD/yolov8m:/yolov8m \
-  --rm vitis_ai_2ve_docker:release_v6.2 "bash"
+  --rm amdih/vitis-ai:versal-2ve-release_v6.2_0612 "bash"
 ```
 - Inside docker:
 
@@ -440,7 +460,7 @@ For details on launching AI Analyzer inside docker, see AI Analyzer section of V
 
 ### Using Vitis AI Runtime (VART)
 
-As seen above, the total inference time using the ONNX Runtime Execution Provider is **22.757ms**. By switching to VART, this inference time can be reduced to **16.545 ms**. 
+As seen above, the total inference time using the ONNX Runtime Execution Provider is **24.441ms**. By switching to VART, this inference time can be reduced to **13.687 ms**. 
 VART offloads computation directly to the NPU with minimal CPU involvement, delivering more efficient end-to-end performance compared to ONNX Runtime.
 
 VART is a runtime environment designed for high-efficiency AI model inference on NPU hardware with minimal CPU overhead, and is used for precise end-to-end performance measurement.
@@ -475,7 +495,7 @@ The JSON file contains an object that describes the configuration for a single m
   },
   "ifms-config": [
     {
-      "name": "ifm0",
+      "name": "images_QuantizeLinear_Output",
       "file": "input_vart/test_image_int8.bin"
     }
   ],
@@ -547,13 +567,13 @@ ml_vart --app-config ml_vart_config.json
 For 100 runs: 
 
 ```bash
-ml_vart --app-config ml_vart_config.json --runs 100
+ml_vart --app-config ml_vart_config.json --benchmark --runs 100
 ```
 
 Expected console output:
 
 ```bash
-Wrote tensor 0 data for frames 0-0 to file: "output_vart/infer_out0-bf16_1x84x8400_output0.bin"
+Average inference time over 100 runs: 13.82 ms
 Run completed successfully.
 ```
 

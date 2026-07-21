@@ -1,0 +1,17 @@
+{
+  "inference-config": {
+    "model-file": "yolov8m_VINT8_skipNodes",
+    "runner-options": {
+      "config-file": "vitisai_config.json",
+      "log-level": "WARNING",
+      "ai-analyzer-profiling": true
+    }
+  },
+  "ifms-config": [
+    {
+      "name": "images_QuantizeLinear_Output",
+      "file": "input_vart/test_image_int8.bin"
+    }
+  ],
+  "ofms-dir": "output_vart"
+}

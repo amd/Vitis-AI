@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # ===========================================================
-# Copyright © 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright © 2026 Advanced Micro Devices, Inc. All rights reserved.
 # MIT License
 # ===========================================================
 
@@ -26,14 +26,6 @@ except (ImportError, AttributeError) as e:
     print("Please install opencv-python:")
     print("  pip install opencv-python --no-deps")
     sys.exit(1)
-
-# Try to import yolov8_utils if available (after cv2 import to avoid conflicts)
-try:
-    from yolov8_utils import *
-    # Re-import cv2 after yolov8_utils in case it was shadowed
-    import cv2
-except ImportError:
-    pass
 
 # Load COCO class labels
 COCO_CLASSES = [  # 80 classes

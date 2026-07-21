@@ -11,9 +11,11 @@
     {
       "device": "ve2-xc2ve3858",
       "optimize_level": 2,
-      "logging_level": "info",
       "keep_outputs": true,
-      "threshold_gops_percent": 20
+      "logging_level": "info",
+      "threshold_gops_percent": 20,
+      "dp_size": 1,
+      "tp_size": 1
     }
    }
   ],

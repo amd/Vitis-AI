@@ -10,6 +10,7 @@
          "plugin": "vaip-pass_vaiml_partition",
          "vaiml_config": {
 	    "keep_outputs": true,
+	    "logging_level": "info",
 	    "device": "ve2-xc2ve3858",
 	    "optimize_level": 2,
             "threshold_gops_percent": 20,

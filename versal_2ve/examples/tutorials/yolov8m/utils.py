@@ -1,7 +1,7 @@
-#!/bin/bash 
+#!/bin/bash
 
 # ===========================================================
-# Copyright © 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright © 2026 Advanced Micro Devices, Inc. All rights reserved.
 # MIT License
 # ===========================================================
 
@@ -12,10 +12,12 @@ import cv2
 import os
 import subprocess
 import numpy as np
+import torch
 import onnxruntime as ort
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from tqdm import tqdm
+from ultralytics.utils.nms import non_max_suppression
 
 PROJECT_DIR = Path(__file__).parent
 
@@ -89,6 +91,46 @@ def preprocess_image(img: np.ndarray, input_size, bgr2rgb=False):
     return img_resized, (top, left), scale
 
 
+def postprocess_output_model_space(
+    output: np.ndarray,
+    min_score_thres: float,
+    nms_iou_thres: float,
+):
+    """
+    Postprocess YOLOv8 output using Ultralytics non_max_suppression.
+    Returns predictions in MODEL INPUT SPACE (640x640)
+
+    Args:
+        output: Model output, shape (num-cls + 4, num-boxes)
+        min_score_thres: Confidence threshold
+        nms_iou_thres: NMS IoU threshold
+
+    Returns:
+        Tensor of detections in model input space (640x640), shape (N, 6)
+        where columns are [x1, y1, x2, y2, conf, class]
+    """
+    # Convert output to torch tensor for Ultralytics NMS
+    predictions_torch = torch.from_numpy(output)
+
+    # Add batch dimension if needed
+    if predictions_torch.dim() == 2:
+        predictions_torch = predictions_torch.unsqueeze(0)  # (84, 8400) -> (1, 84, 8400)
+
+    # Apply Ultralytics NMS 
+    detections = non_max_suppression(
+        predictions_torch,
+        conf_thres=min_score_thres,
+        iou_thres=nms_iou_thres,
+        nc=0,  # For detect task
+        multi_label=True,  # Multi-label NMS
+        agnostic=False,    # Per-class NMS
+        max_det=300        # COCO standard
+    )
+
+    # Return predictions in model input space (640x640)
+    return detections[0]  # Single image (batch size = 1)
+
+
 def postprocess_output(
     output: np.ndarray,
     pad_top_left: tuple,
@@ -99,52 +141,113 @@ def postprocess_output(
     img_width: int,
     img_height: int,
 ):
-    # output shape: (xyxy + num-cls, num-boxes)
+    """
+    Postprocess YOLOv8 output using Ultralytics non_max_suppression.
+    Returns detections in ORIGINAL IMAGE SPACE for COCO evaluation.
 
-    # shape: (num-boxes, cxcywh + num-cls)
-    output = np.transpose(output, (1, 0))
+    Args:
+        output: Model output, shape (num-cls + 4, num-boxes)
+        pad_top_left: Letterbox padding (top, left)
+        scale: Letterbox scale factor
+        yolo_id_to_coco_id_map: Mapping from YOLO class IDs to COCO IDs
+        min_score_thres: Confidence threshold
+        nms_iou_thres: NMS IoU threshold
+        img_width: Original image width
+        img_height: Original image height
 
-    cxcywh_nx4 = output[:, :4]  # shape: (num-boxes, 4)
-    # restore boxes
-    cxcywh_nx4[:, 0] -= pad_top_left[1]  # minus pad left from cx
-    cxcywh_nx4[:, 1] -= pad_top_left[0]  # minus pad top from cy
-    cxcywh_nx4 /= scale  # restore to original image scale
-    cx, cy, w, h = (
-        cxcywh_nx4[:, 0],
-        cxcywh_nx4[:, 1],
-        cxcywh_nx4[:, 2],
-        cxcywh_nx4[:, 3],
+    Returns:
+        List of detections in COCO format (original image space)
+    """
+    # Convert output to torch tensor for Ultralytics NMS
+    # Output shape from model: (84, 8400) for single image
+    # Need to add batch dimension: (1, 84, 8400)
+    # non_max_suppression expects (batch, 84, 8400) - DO NOT TRANSPOSE
+    predictions_torch = torch.from_numpy(output)
+
+    # Add batch dimension if needed
+    if predictions_torch.dim() == 2:
+        predictions_torch = predictions_torch.unsqueeze(0)  # (84, 8400) -> (1, 84, 8400)
+
+    # Apply Ultralytics NMS 
+    # IMPORTANT: non_max_suppression expects (batch, 84, 8400) format, NOT transposed!
+    # multi_label=True allows boxes to have multiple class labels
+    # agnostic=False applies NMS per-class (not across all classes)
+    # max_det=300 is COCO evaluation standard
+    detections = non_max_suppression(
+        predictions_torch,
+        conf_thres=min_score_thres,
+        iou_thres=nms_iou_thres,
+        nc=0,  # For detect task (auto-inferred from prediction shape)
+        multi_label=True,  # KEY: Multi-label NMS for better accuracy
+        agnostic=False,    # KEY: Per-class NMS
+        max_det=300        # COCO standard
     )
-    x0 = cx - w / 2.0
-    y0 = cy - h / 2.0
 
-    class_scores_nxc = output[:, 4:]  # shape: (num-boxes, num-cls)
-    scores = np.amax(class_scores_nxc, axis=1)  # shape: (num-boxes,)
-    class_indices = np.argmax(class_scores_nxc, axis=1)
+    # Process detections - detections is a list with one element per batch
+    pred = detections[0]  # Single image (batch size = 1)
 
-    # Stack boxes into list of [left, top, width, height]
-    boxes_xywh_nx4: np.ndarray = np.stack(arrays=[x0, y0, w, h], axis=1)
-    indices = cv2.dnn.NMSBoxes(boxes_xywh_nx4, scores, min_score_thres, nms_iou_thres)
+    if pred is None or len(pred) == 0:
+        return []
 
-    detections = []
-    for i in indices:
-        cls_id = class_indices[i]
-        score = class_scores_nxc[i, cls_id]
-        if score >= min_score_thres:
-            detections.append(
-                {
-                    "category_id": yolo_id_to_coco_id_map[int(cls_id)],
-                    "bbox": tuple(round(float(x), 4) for x in boxes_xywh_nx4[i]),
-                    "score": round(float(score), 4),
-                }
-            )
+    # pred shape: (num_detections, 6) where columns are [x1, y1, x2, y2, conf, class]
+    # Boxes are in model input space (640x640), need to restore to original image space
 
-    # keep map 100
-    detections = sorted(detections, key=lambda d: d["score"], reverse=True)
-    if len(detections) > 100:
-        detections = detections[:100]
+    coco_detections = []
 
-    return detections
+    for detection in pred:
+        x1, y1, x2, y2, conf, cls = detection.tolist()
+
+        # Convert from xyxy to cxcywh (center format)
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+        w = x2 - x1
+        h = y2 - y1
+
+        # Restore boxes from model input space to original image space
+        # 1. Remove letterbox padding
+        cx_unpadded = cx - pad_top_left[1]  # minus pad left
+        cy_unpadded = cy - pad_top_left[0]  # minus pad top
+
+        # 2. Scale back to original image size
+        cx_orig = cx_unpadded / scale
+        cy_orig = cy_unpadded / scale
+        w_orig = w / scale
+        h_orig = h / scale
+
+        # 3. Convert back to corner format (x, y, w, h) for COCO
+        x_orig = cx_orig - w_orig / 2.0
+        y_orig = cy_orig - h_orig / 2.0
+
+        # Clamp to image boundaries
+        x_orig = max(0, min(x_orig, img_width))
+        y_orig = max(0, min(y_orig, img_height))
+        w_orig = min(w_orig, img_width - x_orig)
+        h_orig = min(h_orig, img_height - y_orig)
+
+        # Skip invalid boxes
+        if w_orig <= 0 or h_orig <= 0:
+            continue
+
+        # Convert YOLO class ID to COCO class ID
+        coco_class_id = yolo_id_to_coco_id_map[int(cls)]
+
+        coco_detections.append({
+            "category_id": coco_class_id,
+            "bbox": (
+                round(float(x_orig), 4),
+                round(float(y_orig), 4),
+                round(float(w_orig), 4),
+                round(float(h_orig), 4)
+            ),
+            "score": round(float(conf), 4),
+        })
+
+    # Sort by confidence (highest first) and limit to top 300
+    coco_detections = sorted(coco_detections, key=lambda d: d["score"], reverse=True)
+    if len(coco_detections) > 300:
+        coco_detections = coco_detections[:300]
+
+    return coco_detections
 
 
 def draw_detections(
@@ -179,6 +282,156 @@ def draw_detections(
 
     save_path = str(save_path or "runs/debug_postprocess.png")
     cv2.imwrite(save_path, canvas)
+
+
+def evaluate_model_ultralytics(
+    session: ort.InferenceSession,
+    input_name: str,
+    coco: COCO,
+    images_folder: Path,
+    img_ids: list,
+    yolo_id_to_cls_map: dict,
+    coco_id_to_cls_map: dict,
+    input_size=(640, 640),
+    min_score_thres=0.001,
+    nms_iou_thresh=0.6,
+    num_max_images=None,
+):
+    """
+    Evaluate model using Ultralytics metrics 
+    Predictions and labels stay in model input space (640x640).
+
+    Returns:
+        stats: List of (correct, conf, pcls, tcls) for ap_per_class
+        num_classes: Number of classes
+    """
+    from ultralytics.utils import ops
+    from ultralytics.utils.metrics import box_iou
+
+    images_folder = Path(images_folder)
+    assert images_folder.is_dir()
+
+    if num_max_images is not None:
+        img_ids = img_ids[:num_max_images]
+
+    # Create mapping from COCO class ID to YOLO class ID
+    # yolo_id_to_cls_map: {'0': 'person', '1': 'bicycle', ...}
+    # coco_id_to_cls_map: {1: 'person', 2: 'bicycle', ...}
+    # We need: {1: 0, 2: 1, ...} (COCO ID -> YOLO ID)
+    coco_id_to_yolo_id = {}
+    for yolo_id_str, class_name in yolo_id_to_cls_map.items():
+        # Find the COCO ID for this class name
+        for coco_id, coco_class_name in coco_id_to_cls_map.items():
+            if coco_class_name == class_name:
+                coco_id_to_yolo_id[coco_id] = int(yolo_id_str)
+                break
+
+    stats = []
+    iouv = torch.linspace(0.5, 0.95, 10)  # IoU vector for mAP@0.5:0.95
+    imgsz = input_size[0]  # Assuming square input
+
+    for img_id in tqdm(img_ids):
+        img_info = coco.loadImgs(img_id)[0]
+        img_path = images_folder / img_info["file_name"]
+        img: np.ndarray = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+        img_height, img_width = img.shape[:2]
+
+        # Preprocess image
+        img_resized, pad_top_left, scale = preprocess_image(
+            img, input_size, bgr2rgb=True
+        )
+
+        # Run inference
+        outputs = session.run(output_names=None, input_feed={input_name: img_resized})
+        outputs = outputs[0]
+
+        # Postprocess in model space (no coordinate transformation)
+        pred = postprocess_output_model_space(
+            outputs[0],
+            min_score_thres,
+            nms_iou_thresh,
+        )
+
+        # Get ground truth labels for this image
+        ann_ids = coco.getAnnIds(imgIds=img_id)
+        anns = coco.loadAnns(ann_ids)
+
+        # Convert COCO annotations to model input space
+        labels_list = []
+        for ann in anns:
+            if ann.get('iscrowd', 0):
+                continue
+
+            # Get COCO bbox in original image space (x, y, w, h)
+            x, y, w, h = ann['bbox']
+            coco_class_id = ann['category_id']
+
+            # Convert COCO class ID to YOLO class ID
+            if coco_class_id not in coco_id_to_yolo_id:
+                continue
+            yolo_class_id = coco_id_to_yolo_id[coco_class_id]
+
+            # Transform bbox from original image space to model input space
+            # 1. Scale to resized (before padding)
+            x_scaled = x * scale
+            y_scaled = y * scale
+            w_scaled = w * scale
+            h_scaled = h * scale
+
+            # 2. Add padding offset
+            x_model = x_scaled + pad_top_left[1]  # add left padding
+            y_model = y_scaled + pad_top_left[0]  # add top padding
+
+            # 3. Convert to normalized xywh format (normalized by model input size)
+            cx_norm = (x_model + w_scaled / 2) / imgsz
+            cy_norm = (y_model + h_scaled / 2) / imgsz
+            w_norm = w_scaled / imgsz
+            h_norm = h_scaled / imgsz
+
+            labels_list.append([yolo_class_id, cx_norm, cy_norm, w_norm, h_norm])
+
+        # Process stats for this image
+        if len(labels_list) > 0:
+            labels = torch.tensor(labels_list, dtype=torch.float32)
+            nl = labels.shape[0]
+
+            # Convert labels from normalized xywh to model input space xyxy
+            tbox = ops.xywh2xyxy(labels[:, 1:5])
+            tbox = tbox * torch.tensor([imgsz, imgsz, imgsz, imgsz], dtype=tbox.dtype)
+            labelsn = torch.cat((labels[:, 0:1], tbox), 1)
+
+            if pred is None or len(pred) == 0:
+                # No predictions but have ground truth
+                stats.append((
+                    torch.zeros(0, iouv.numel(), dtype=torch.bool),
+                    torch.Tensor(),
+                    torch.Tensor(),
+                    labels[:, 0]
+                ))
+            else:
+                # Compare predictions and labels (both in model input space)
+                correct = _process_batch_ultralytics(pred, labelsn, iouv)
+                stats.append((correct, pred[:, 4], pred[:, 5], labels[:, 0]))
+
+    return stats, len(yolo_id_to_cls_map)
+
+
+def _process_batch_ultralytics(detections, labels, iouv):
+    from ultralytics.utils.metrics import box_iou
+
+    iou = box_iou(labels[:, 1:], detections[:, :4])
+    correct = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool)
+    correct_class = labels[:, 0:1] == detections[:, 5]
+    for i in range(len(iouv)):
+        x = torch.where((iou >= iouv[i]) & correct_class)
+        if x[0].shape[0]:
+            matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
+            if x[0].shape[0] > 1:
+                matches = matches[matches[:, 2].argsort()[::-1]]
+                matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
+                matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
+            correct[matches[:, 1].astype(int), i] = True
+    return torch.tensor(correct, dtype=torch.bool, device=detections.device)
 
 
 def evaluate_model(
@@ -281,6 +534,67 @@ def save_coco_eval_results(
         json.dump(summary, f, indent=2)
 
     print(f"COCO evaluation results saved to: {save_path}")
+
+
+def evaluate_ultralytics(
+    stats: list,
+    names: dict,
+    save_path: str = None
+):
+    """
+    Args:
+        stats: List of (correct, conf, pcls, tcls) tuples from each image
+        names: Class names dict
+        save_path: Optional path to save results
+
+    Returns:
+        dict with Precision, Recall, mAP50, mAP50-95
+    """
+    from ultralytics.utils.metrics import ap_per_class
+    from pathlib import Path
+
+    if not stats:
+        return None
+
+    stats = [torch.cat(x, 0).cpu().numpy() for x in zip(*stats)]
+    if len(stats) and stats[0].any():
+        # Handle both old (7 values) and new (12 values) ap_per_class return formats
+        results = ap_per_class(
+            *stats,
+            plot=False,
+            save_dir=Path('.'),
+            names=names
+        )
+        # Extract first 7 values which are consistent across versions
+        tp, fp, p, r, f1, ap, ap_class = results[:7]
+        # ap shape: (num_classes, 10) where 10 IoU thresholds from 0.5 to 0.95
+        # ap[:, 0] is mAP@0.5
+        # ap[:, 5] is mAP@0.75 (0.5 + 5*0.05 = 0.75)
+        ap50 = ap[:, 0]      # IoU=0.50
+        ap75 = ap[:, 5]      # IoU=0.75
+        ap_mean = ap.mean(1) # Mean across all IoU thresholds
+
+        mp, mr = p.mean(), r.mean()
+        map50 = ap50.mean()
+        map75 = ap75.mean()
+        map = ap_mean.mean()
+
+        metrics = {
+            'Precision': float(mp),
+            'Recall': float(mr),
+            'mAP50': float(map50),
+            'mAP75': float(map75),
+            'mAP50-95': float(map)
+        }
+
+        if save_path:
+            import json
+            with open(save_path, 'w') as f:
+                json.dump(metrics, f, indent=2)
+
+        return metrics
+
+    return None
 
 
 def evaluate_coco(coco_gt: COCO, detections_path: str, results_save_path: str):

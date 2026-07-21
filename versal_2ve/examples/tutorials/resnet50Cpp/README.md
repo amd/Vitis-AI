@@ -15,7 +15,7 @@ The process begins with getting the resnet50 model from HuggingFace ONNX Model Z
 
 This tutorial requires:
 
-* Latest Vitis AI Docker for Versal AI Edge Series Gen 2:
+* Vitis AI 6.2 Docker for Versal AI Edge Series Gen 2:
   * Instructions for installation and startup are in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
 * VEK385 evaluation kit:
   * Setup instructions are available in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
@@ -62,8 +62,26 @@ cd ..
 chmod -R a+w resnet50Cpp
 ```
 
-Load the latest docker image and launch it as explained in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
+Load the docker image:
 
+```bash
+docker load -i <docker_image_file>.tgz
+```
+
+Run `docker images` to verify docker REPOSITORY, IMAGEID and TAG information.
+
+|REPOSITORY          | TAG               | IMAGE ID    | CREATED       | SIZE   |
+|--------------------|-------------------|-------------|---------------|--------|
+|vitis_ai_2ve_docker | release_v6.2      |   ??????    |  xx hours ago | 39.1GB |
+
+Start the docker:
+
+```bash
+docker run -it --network host \  
+  -v /path/to/your/license:/usr/licenses \  
+  -v $PWD/resnet50Cpp:/resnet50Cpp \  
+  --rm vitis_ai_2ve_docker:release_v6.2  "bash"
+```
 ### Model Compilation
 
 Compile the resnet50 ONNX model `models/resnet50-v1-12.onnx` for the NPU.

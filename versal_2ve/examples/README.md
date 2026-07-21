@@ -19,7 +19,6 @@ examples/
 ├── tutorials/                     # Guided tutorials (see tutorials/)
 │   ├── resnet18_bf16/             # ResNet-18 BF16 flow
 │   ├── resnet50_quark/            # ResNet50 INT8 with AMD Quark
-│   ├── resnet50Cpp/               # ResNet50 FP32 (BF16); Python sources; run with C++ (ONNX-RT)
 │   ├── yolov8m/                   # YOLOv8m detection: Quark VINT8, compile, ORT on target
 │   └── README.md
 ├── python_examples/               # Python ORT + VitisAI EP on the embedded target (see python_examples/)
@@ -58,7 +57,6 @@ The tables below are the reference overview:
 |---------|----------|------|---------------|---------------|-------|--------------|
 | [`resnet18_bf16`](tutorials/resnet18_bf16/) | Python | ResNet-18: export ONNX → Vitis AI compile → deploy; `runmodel.py` compares CPU vs NPU (e.g. RMSE) | Yes (`compile.py` in Docker) | Yes (`runmodel.py` on board) | BF16 (compiler from FP32 ONNX) | ImageNet-style validation; ONNX under `models/` |
 | [`resnet50_quark`](tutorials/resnet50_quark/) | Python | ResNet50: Quark INT8 quant → compile → accuracy on CPU/NPU → on-target inference | Yes (`compile.py` in Docker) | Yes (`runmodel.py`; `runmodel_pre_cpu.py` for host checks) | INT8 (AMD Quark calibration) | ImageNet val / calibration JPEGs; ONNX under `models/` |
-| [`resnet50Cpp`](tutorials/resnet50Cpp/) | Python and C++ | ResNet50 FP32 (BF16); Python sources; run with C++ (ONNX-RT) | Yes (`compile.py` in Docker) | Yes (`runmodel.cpp` on board) | FP32 (BF16) | ImageNet val / calibration JPEGs; ONNX under `models/` |
 | [`yolov8m`](tutorials/yolov8m/) | Python | YOLOv8m: Quark VINT8 (skip-nodes), compile, latency tuning, ORT EP on board | Yes (`compile.py` in Docker) | Yes (`run_inference.py` on board) | INT8 VINT8 + BF16 tail (per tutorial) | Calibration / val images; COCO-style labels |
 
 ### Python samples (`python_examples`)
