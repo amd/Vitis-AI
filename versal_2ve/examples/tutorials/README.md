@@ -11,13 +11,14 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
 ---
 
-Guided **Python** tutorials for Versal AI Edge Series Gen 2: prepare models in the Vitis AI Docker on the host, run **Vitis AI compilation** (`compile.py`), then run **ONNX Runtime with the VitisAI Execution Provider** on the target (`runmodel.py`). Full steps, Docker mounts, and board setup are in each tutorial’s README.
+Guided **Python** tutorials for Versal AI Edge Series Gen 2: prepare models in the Vitis AI Docker on the host, run **Vitis AI compilation** (`compile.py`), then run **ONNX Runtime with the VitisAI Execution Provider** on the target (`runmodel.py`). Full steps, Docker mounts, and board setup are in each tutorial's README.
 
 ## Layout
 
 ```text
 tutorials/
 ├── README.md                 # This file
+├── cpu_subgraph/             # YOLOv7 CPU/NPU partition tutorial with in-graph NMS; Python sources + README
 ├── resnet18_bf16/            # ResNet-18 end-to-end (BF16); Python sources + README
 ├── resnet50_quark/           # ResNet50 INT8 with AMD Quark; Python sources + README
 └── yolov8m/                  # YOLOv8m object detection (Quark VINT8 → compile → ORT); sources + README
@@ -26,8 +27,8 @@ tutorials/
 ## Tutorials (summary)
 
 | Tutorial | Role | Quant | Main scripts |
-|----------|------|-------|----------------|
+| --- | --- | --- | --- |
 | [**resnet18_bf16**](resnet18_bf16/) | Export ONNX, compile with Vitis AI, deploy and run ORT on the board; optional CPU vs NPU comparison | BF16 via compiler | `export_to_onnx.py`, `compile.py`, `runmodel.py` |
 | [**resnet50_quark**](resnet50_quark/) | Download ONNX, Quark INT8 quantization, compile, evaluate accuracy, on-target inference | INT8 (Quark) | `quantize.py`, `compile.py`, `evaluate.py`, `runmodel.py`, `runmodel_pre_cpu.py` |
 | [**yolov8m**](yolov8m/) | YOLOv8m detection: export, Quark VINT8 (with skip-nodes), compile, NPU timing / config tuning, on-target ORT inference | INT8 VINT8 (Quark); compiler BF16 tail per tutorial | `models/export_to_onnx.py`, `quantize.py`, `compile.py`, `evaluate.py`, `run_inference.py` |
-
+| [**cpu_subgraph**](cpu_subgraph/) | Heterogeneous NPU+CPU partitioned execution using VART-ML, demonstrated with YOLOv7 with in-graph NMS | INT8 + CPU FP32 tail (mixed execution) | `export_yolov7_nms_onnx.py`, `quantize_int8.py`, `compile.py`, `prepare_input.py`, `postprocess_bin_output.py` |

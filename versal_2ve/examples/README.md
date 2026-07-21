@@ -17,6 +17,7 @@ examples/
 ├── data/                          # IFM, JPEGs, test vectors for on-target use (see data/)
 ├── utilities/                     # Host-side helpers (e.g. jpeg_to_binary.py → IFM .bin; see utilities/)
 ├── tutorials/                     # Guided tutorials (see tutorials/)
+│   ├── cpu_subgraph/              # YOLOv7 CPU/NPU partition tutorial with in-graph NMS
 │   ├── resnet18_bf16/             # ResNet-18 BF16 flow
 │   ├── resnet50_quark/            # ResNet50 INT8 with AMD Quark
 │   ├── yolov8m/                   # YOLOv8m detection: Quark VINT8, compile, ORT on target
@@ -58,6 +59,7 @@ The tables below are the reference overview:
 | [`resnet18_bf16`](tutorials/resnet18_bf16/) | Python | ResNet-18: export ONNX → Vitis AI compile → deploy; `runmodel.py` compares CPU vs NPU (e.g. RMSE) | Yes (`compile.py` in Docker) | Yes (`runmodel.py` on board) | BF16 (compiler from FP32 ONNX) | ImageNet-style validation; ONNX under `models/` |
 | [`resnet50_quark`](tutorials/resnet50_quark/) | Python | ResNet50: Quark INT8 quant → compile → accuracy on CPU/NPU → on-target inference | Yes (`compile.py` in Docker) | Yes (`runmodel.py`; `runmodel_pre_cpu.py` for host checks) | INT8 (AMD Quark calibration) | ImageNet val / calibration JPEGs; ONNX under `models/` |
 | [`yolov8m`](tutorials/yolov8m/) | Python | YOLOv8m: Quark VINT8 (skip-nodes), compile, latency tuning, ORT EP on board | Yes (`compile.py` in Docker) | Yes (`run_inference.py` on board) | INT8 VINT8 + BF16 tail (per tutorial) | Calibration / val images; COCO-style labels |
+| [`cpu_subgraph`](tutorials/cpu_subgraph/) | Python and C++ | Heterogeneous NPU+CPU partitioned execution using VART-ML, demonstrated with YOLOv7 with in-graph NMS | Yes (`compile.py` in Docker) | No — VART-ML via `ml_vart` cpp application | INT8 + CPU FP32 tail (mixed execution) | COCO val images for calibration; test image + generated IFM/OFM binaries |
 
 ### Python samples (`python_examples`)
 

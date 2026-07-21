@@ -1,0 +1,43 @@
+{
+    "passes": [
+        {
+            "name": "init",
+            "plugin": "vaip-pass_init"
+        },
+        {
+            "name": "vaiml_partition",
+            "plugin": "vaip-pass_vaiml_partition",
+            "vaiml_config": {
+                "device": "ve2-xc2ve3858",
+                "optimize_level": 3,
+                "keep_outputs": true,
+                "logging_level": "info"
+            }
+        },
+        {
+            "name": "vaiml_cpu_partition",
+            "plugin": "vaip-pass_vaiml_cpu"
+        },
+        {
+            "name": "vaiml_connectivity",
+            "plugin": "vaip-pass_vaiml_connectivity"
+        },
+        {
+            "name": "vaiml_create_cache",
+            "plugin": "vaip-pass_vaiml_create_cache"
+        }
+    ],
+    "target": "VAIML",
+    "targets": [
+        {
+            "name": "VAIML",
+            "pass": [
+                "init",
+                "vaiml_partition",
+                "vaiml_cpu_partition",
+                "vaiml_connectivity",
+                "vaiml_create_cache"
+            ]
+        }
+    ]
+}
