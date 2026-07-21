@@ -1,0 +1,4 @@
+seaborn==0.13.2
+scipy==1.13.1
+onnx-graphsurgeon==0.5.8
+opencv-python-headless==4.10.0.84

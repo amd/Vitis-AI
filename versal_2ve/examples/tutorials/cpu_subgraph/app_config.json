@@ -1,0 +1,16 @@
+{
+    "inference-config": {
+        "model-file": "yolov7_NMS_MP_Calibrated.rai",
+        "runner-options": {
+            "input-tensor-type": "CPU",
+            "output-tensor-type": "CPU"
+        }
+    },
+    "ifms-config": [
+        {
+            "name": "images",
+            "file": "ifm_0.bin"
+        }
+    ],
+    "ofms-dir": "output_NPU"
+}
