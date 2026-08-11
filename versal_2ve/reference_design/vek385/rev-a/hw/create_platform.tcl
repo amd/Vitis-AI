@@ -26,6 +26,9 @@ set_property platform.extensible true [current_project]
 set_property platform.board_id  "vek385-reva" [current_project]
 set_property PFM_NAME {amd:VEK385:telluride:0.0} [get_files [current_bd_design].bd]
 
+# Constraining AIE NSU near to 0 to 3 columns
+source aie_constraints.tcl
+
 validate_bd_design
 save_bd_design
 
