@@ -96,10 +96,10 @@ This JSON configuration contains the following sections:
       }
     ],
     "execution-provider-options": {
-      "config_file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
+      "config-file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
       "target": "VAIML",
-      "cache_dir": "/etc/vai/models",
-      "cache_key": "resnet50_int8"
+      "cache-dir": "/etc/vai/models",
+      "cache-key": "resnet50_int8"
     }
   },
   "postprocess-config": {
@@ -143,10 +143,10 @@ YOLOX uses `LETTERBOX` resizing and a detection post-process (`type: "NMS"`) wit
       { "memory-layout": "NCHW" }
     ],
     "execution-provider-options": {
-      "config_file": "/etc/vai/models/yolox_m_int8/vitisai_config.json",
+      "config-file": "/etc/vai/models/yolox_m_int8/vitisai_config.json",
       "target": "VAIML",
-      "cache_dir": "/etc/vai/models",
-      "cache_key": "yolox_m_int8"
+      "cache-dir": "/etc/vai/models",
+      "cache-key": "yolox_m_int8"
     }
   },
   "postprocess-config": {
@@ -161,9 +161,7 @@ YOLOX uses `LETTERBOX` resizing and a detection post-process (`type: "NMS"`) wit
       "grid-shape": [[80, 80], [40, 40], [20, 20]],
       "num-anchorboxes": [],
       "anchors": [],
-      "is-scaling-required": "true",
-      "input-layout":  ["NCHW"],
-      "output-layout": ["NHC"]
+      "is-scaling-required": "true"
     }
   },
   "metaconvert-config": {
@@ -211,10 +209,10 @@ See [preprocessing_config.md](../../../docs/preprocessing_config.md) for the ful
 
 | Field       | Type   | Description                                                             | Example                                           |
 | ----------- | ------ | ----------------------------------------------------------------------- | ------------------------------------------------- |
-| config_file | string | Path to execution provider config file                                  | "vitisai_ep_configs/resnet50_vitisai_config.json" |
+| config-file | string | Path to execution provider config file                                  | "vitisai_ep_configs/resnet50_vitisai_config.json" |
 | target      | String | Target hardware platform for VitisAI execution provider                 | "VAIML"                                           |
-| cache_dir   | string | The path and name of the cache directory                                | "my_cache_dir"                                    |
-| cache_key   | string | The subfolder in the cache directory where the compiled model is stored | "ResNet50"                                        |
+| cache-dir   | string | The path and name of the cache directory                                | "my_cache_dir"                                    |
+| cache-key   | string | The subfolder in the cache directory where the compiled model is stored | "ResNet50"                                        |
 
 ---
 

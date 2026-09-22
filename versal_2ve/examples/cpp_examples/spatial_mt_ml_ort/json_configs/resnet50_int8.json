@@ -7,7 +7,6 @@
     "scale-g": 0.017507,
     "scale-b": 0.017429,
     "colour-format" : "RGBP_FLOAT",
-    "maintain-aspect-ratio" : true,
     "resizing-type" : "PANSCAN",
     "in-mem-bank" : 2,
     "out-mem-bank" : 2
@@ -20,10 +19,10 @@
       }
     ],
     "execution-provider-options": {
-      "config_file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
+      "config-file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
       "target": "VAIML",
-      "cache_dir": "/etc/vai/models",
-      "cache_key": "resnet50_int8"
+      "cache-dir": "/etc/vai/models",
+      "cache-key": "resnet50_int8"
     }
   },
   "postprocess-config": {

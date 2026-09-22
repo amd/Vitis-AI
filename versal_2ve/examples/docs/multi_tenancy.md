@@ -279,7 +279,7 @@ Start Column | Models executed | OFMs file saved
 -------------+-----------------+---------------------------------------------------------
 32 (shared)  | Model_1         | ./out_resnet50_dp1tp1/ofm_model_1/output_1x1000_int8.bin
 -------------+-----------------+---------------------------------------------------------
-root@amd-edf:/home/amd-edf/rk/multi_tenancy# ./vart_multi_tenancy --config json_configs/resnet50_dp1tp1_config.json --log-level 0
+root@amd-edf:/home/amd-edf/test/multi_tenancy# ./vart_multi_tenancy --config json_configs/resnet50_dp1tp1_config.json --log-level 0
 ========== Overlay Column Assignments ==========
   start_column 32 : Model_1
 ================================================
@@ -536,9 +536,6 @@ Start Column | Models executed | OFMs file saved
 -------------+-----------------+---------------------------------------------------------
 
 ```
-
-<!-- TODO: Paste xrt-smi column occupation output here -->
-
 
 ### Case 4 — Data Parallelism = 2 & Tensor Parallelism = 2
 
@@ -881,8 +878,6 @@ Start Column | Models executed | OFMs file saved
 0 (shared)   | Model_1         | ./out_yoloxm_dp4tp1/ofm_model_1/output_1x8400x88_int8.bin
 -------------+-----------------+----------------------------------------------------------
 ```
-
-<!-- TODO: Paste xrt-smi column occupation output here -->
 
 ---
 

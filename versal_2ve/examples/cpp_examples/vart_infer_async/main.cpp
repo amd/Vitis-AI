@@ -17,6 +17,7 @@
 #include <boost/program_options.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -29,10 +30,12 @@
 #include <iostream>
 #include <optional>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "common/app_utils.hpp"
 #include "vart_infer_async.hpp"
 
 namespace po = boost::program_options;
@@ -53,7 +56,11 @@ void add_options(po::options_description& desc) {
       ("model-path", po::value<std::string>()->required(),
           "Compiled model path: VAIML `.rai` file or compiled-model cache directory (positional: first, or this flag)")
       ("input_binary,input-binary", po::value<std::string>()->default_value(std::string()),
-          "Input binary IFM (positional: second, or this flag); not used with --dry-run");
+          "Input binary IFM (positional: second, or this flag); not used with --dry-run")
+      ("input-tensor-type", po::value<std::string>()->default_value("HW"),
+          "Input boundary tensor type: HW (hardware-native, default) or CPU (ONNX format). Optional for fully-NPU models; mandatory and must be CPU when the model has a CPU subgraph at its input")
+      ("output-tensor-type", po::value<std::string>()->default_value("HW"),
+          "Output boundary tensor type: HW (hardware-native, default) or CPU (ONNX format). Optional for fully-NPU models; mandatory and must be CPU when the model has a CPU subgraph at its output");
   // clang-format on
 }
 
@@ -91,6 +98,29 @@ int validate_parsed_options(std::uint32_t num_iteration, bool dry_run, const std
     std::cout << "Mode               : dry-run (no IFM/OFM file I/O; random IFM fill)\n\n";
   }
   return 0;
+}
+
+/**
+ * Parses a tensor-type string (case-insensitive `HW` or `CPU`) into a @c vart::TensorType.
+ *
+ * @param label       Direction label used in the diagnostic (e.g. "input" / "output").
+ * @param value       Raw CLI value.
+ * @param out_type    Set to the parsed tensor type on success.
+ * @return @c true on success; @c false (with a diagnostic printed) when @p value is not `HW` or `CPU`.
+ */
+bool parse_tensor_type(const std::string& label, const std::string& value, vart::TensorType& out_type) {
+  std::string upper = value;
+  std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char c) { return std::toupper(c); });
+  if (upper == "HW") {
+    out_type = vart::TensorType::HW;
+    return true;
+  }
+  if (upper == "CPU") {
+    out_type = vart::TensorType::CPU;
+    return true;
+  }
+  std::cerr << "[ERROR] --" << label << "-tensor-type must be 'HW' or 'CPU' (got '" << value << "').\n";
+  return false;
 }
 
 /** One IFM file frame: sum of input tensor sizes for a single batch row (one logical sample). */
@@ -175,12 +205,12 @@ struct LoadedIfmBuffer {
  * Bytes per row: @c out.bytes_per_frame is @c bytes_per_frame(infer) — the sum of
  * @c size_in_bytes over all input tensors for one batch index (one logical sample).
  *
- * Non–dry-run: calls @c load_input_binary: reads up to @c infer.batch_size() consecutive sample
+ * Non–dry-run: calls @c load_input_binary: reads up to @c infer.input_batch_size() consecutive sample
  * rows from the start of @p input_path (each row @c bytes_per_frame bytes). The value stored in
  * @c out.num_frames is the number of sample rows read (see @c load_input_binary). May throw if the
  * file is missing, too small, or unreadable.
  *
- * Dry-run: calls @c load_input_random with @c kDefaultDryRunFrameCount * infer.batch_size()
+ * Dry-run: calls @c load_input_random with @c kDefaultDryRunFrameCount * infer.input_batch_size()
  * sample rows of random bytes (no file access). @p input_path is unused.
  *
  * @param infer       Constructed @c VartInferAsync for the target model (batch size and tensor layout).
@@ -196,9 +226,9 @@ LoadedIfmBuffer load_ifm_buffer_for_model(VartInferAsync& infer, bool dry_run, c
   if (out.bytes_per_frame == 0) {
     throw std::runtime_error("bytes per input frame is zero");
   }
-  out.num_frames = dry_run ? load_input_random(VartInferAsync::kDefaultDryRunFrameCount * infer.batch_size(),
+  out.num_frames = dry_run ? load_input_random(VartInferAsync::kDefaultDryRunFrameCount * infer.input_batch_size(),
                                                out.bytes_per_frame, out.data)
-                           : load_input_binary(input_path, out.bytes_per_frame, infer.batch_size(), out.data);
+                           : load_input_binary(input_path, out.bytes_per_frame, infer.input_batch_size(), out.data);
   return out;
 }
 
@@ -231,13 +261,13 @@ bool copy_frame_to_slot(const VartInferAsync& app,
     return false;
   }
   const std::size_t num_rows_in_buffer = input_data.size() / bytes_per_frame;
-  if (num_rows_in_buffer < app.batch_size()) {
+  if (num_rows_in_buffer < app.input_batch_size()) {
     std::cout << "[INFO] copy_frame_to_slot: IFM has " << num_rows_in_buffer << " full row(s); need "
-              << app.batch_size() << " row(s) for frame_index=" << frame_index << " and batch_size=" << app.batch_size()
-              << ". Short slots are zero-filled.\n";
+              << app.input_batch_size() << " row(s) for frame_index=" << frame_index
+              << " and batch_size=" << app.input_batch_size() << ". Short slots are zero-filled.\n";
   }
-  for (std::size_t b = 0; b < app.batch_size(); ++b) {
-    const std::size_t row_index = frame_index * app.batch_size() + b;
+  for (std::size_t b = 0; b < app.input_batch_size(); ++b) {
+    const std::size_t row_index = frame_index * app.input_batch_size() + b;
     const std::uint8_t* row_base =
         (row_index < num_rows_in_buffer) ? (input_data.data() + row_index * bytes_per_frame) : nullptr;
     std::size_t off = 0;
@@ -310,9 +340,9 @@ static std::string data_type_to_string(vart::DataType data_type) {
  * batch rows @c b = 0 .. (rows_to_write - 1) in order. When @p num_total_passes is 1: @c output_f{frame_index}_{t}.bin
  * ; for multiple full passes: @c output_p{pass_1based}_f{frame_index}_{t}.bin .
  *
- * @param N_output_frames If @c 0, writes all @c app.batch_size() rows; otherwise writes at most this many batch
- *                         rows (capped by batch size). Use @c 1 when the IFM held only one sample row so OFMs
- *                         do not repeat padded batch rows.
+ * @param N_output_frames If @c 0, writes all @c app.output_batch_size() rows; otherwise writes at most this many
+ *                         batch rows (capped by output batch size). Use @c 1 when the IFM held only one sample row
+ *                         so OFMs do not repeat padded batch rows.
  */
 void write_outputs_for_frame(const VartInferAsync& app,
                              const std::vector<std::vector<vart::NpuTensor>>& ofm_batch,
@@ -320,7 +350,7 @@ void write_outputs_for_frame(const VartInferAsync& app,
                              std::uint32_t pass_0based,
                              std::uint32_t num_total_passes,
                              std::size_t N_output_frames) {
-  const std::size_t bsz = app.batch_size();
+  const std::size_t bsz = app.output_batch_size();
   const std::size_t rows_to_write = (N_output_frames == 0) ? bsz : std::min(N_output_frames, bsz);
   const std::size_t num_t = app.num_output_tensors();
   for (std::size_t t = 0; t < num_t; ++t) {
@@ -543,18 +573,19 @@ void run_sync_infer_pass(VartInferAsync& infer,
   }
 }
 
-/** Wall-clock timing for an infer pass (same pattern as `vart_multimodel_seq/main.cpp`). */
-void log_infer_pass_wall_time(const char* label,
-                              std::chrono::high_resolution_clock::time_point t0,
-                              std::chrono::high_resolution_clock::time_point t1,
-                              std::size_t n_frames) {
+/** Append one standardized inference-time / throughput entry for an infer pass. */
+void append_perf_rows(std::vector<PerfEntry>& entries,
+                      const char* label,
+                      std::chrono::high_resolution_clock::time_point t0,
+                      std::chrono::high_resolution_clock::time_point t1,
+                      std::size_t n_frames,
+                      std::size_t batch_size) {
   const auto dur_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
   const double total_ms = static_cast<double>(dur_ns) / 1.0e6;
-  std::cout << "[INFO] " << label << ": " << std::fixed << std::setprecision(3) << total_ms << " ms";
-  if (n_frames > 0) {
-    std::cout << " (" << std::setprecision(3) << (total_ms / static_cast<double>(n_frames)) << " ms/frame)";
-  }
-  std::cout << " [" << n_frames << " frames]\n";
+  const std::size_t num_batches = (batch_size > 0) ? ((n_frames + batch_size - 1) / batch_size) : n_frames;
+  const double ms_per_batch = (num_batches > 0) ? (total_ms / static_cast<double>(num_batches)) : 0.0;
+  const double fps = (total_ms > 0.0) ? (static_cast<double>(n_frames) * 1000.0 / total_ms) : 0.0;
+  entries.push_back({std::string(label), fmt_ms_per_inference(ms_per_batch, batch_size), fmt_fps(fps)});
 }
 
 /**
@@ -563,9 +594,10 @@ void log_infer_pass_wall_time(const char* label,
  * independent slot used with @c VartInferAsync::execute_async / @c wait_job: the host can
  * fill one slot’s inputs while another job is in flight on the NPU.
  *
- * **Layout** (same for @p input_tensors and @p output_tensors):
- *   - @c [job][batch][tensor]  —  @c job indexes the pool slot; @c batch is the model batch
- *     index @c 0 .. @c batch_size-1; @c tensor is the input or output tensor index.
+ * **Layout** (@p input_tensors and @p output_tensors are sized independently, per direction):
+ *   - @c [job][batch][tensor]  —  @c job indexes the pool slot; @c batch is @c 0 .. @c input_batch_size-1
+ *     for @p input_tensors, or @c 0 .. @c output_batch_size-1 for @p output_tensors; @c tensor is the
+ *     input or output tensor index.
  *   - Every @c vart::NpuTensor is allocated via @c a.allocate_npu_tensor() using
  *     @c input_tensors_info() / @c output_tensors_info() from the @c VartInferAsync runner.
  *
@@ -574,8 +606,8 @@ void log_infer_pass_wall_time(const char* label,
  * @param num_concurrent_jobs  Number of job slots; should match @c VartInferAsync::kNumConcurrentJobs
  *                            and the @c run_async_infer_pass / @c run_sync_infer_pass schedule.
  * @param input_tensors        Appended in place: after the call, size is @p num_concurrent_jobs;
- *                            each element is @c batch_size × @c num_input_tensors HW tensors.
- * @param output_tensors       Same structure for outputs (@c batch_size × @c num_output_tensors
+ *                            each element is @c input_batch_size × @c num_input_tensors HW tensors.
+ * @param output_tensors       Same structure for outputs (@c output_batch_size × @c num_output_tensors
  *                            per job).
  *
  * @return Always @c true (no failure path; allocation throws from @c allocate_npu_tensor on error).
@@ -588,20 +620,23 @@ bool allocate_tensor_pools(VartInferAsync& a,
   const auto& oi = a.output_tensors_info();
   for (std::uint32_t job = 0; job < num_concurrent_jobs; ++job) {
     std::vector<std::vector<vart::NpuTensor>> batch_in;
-    std::vector<std::vector<vart::NpuTensor>> batch_out;
-    for (std::size_t b = 0; b < a.batch_size(); ++b) {
-      std::vector<vart::NpuTensor> input_tensors;
-      std::vector<vart::NpuTensor> output_tensors;
+    for (std::size_t b = 0; b < a.input_batch_size(); ++b) {
+      std::vector<vart::NpuTensor> row;
       for (std::size_t t = 0; t < ii.size(); ++t) {
-        input_tensors.push_back(a.allocate_npu_tensor(ii[t]));
+        row.push_back(a.allocate_npu_tensor(ii[t]));
       }
-      for (std::size_t t = 0; t < oi.size(); ++t) {
-        output_tensors.push_back(a.allocate_npu_tensor(oi[t]));
-      }
-      batch_in.push_back(std::move(input_tensors));
-      batch_out.push_back(std::move(output_tensors));
+      batch_in.push_back(std::move(row));
     }
     input_tensors.push_back(std::move(batch_in));
+
+    std::vector<std::vector<vart::NpuTensor>> batch_out;
+    for (std::size_t b = 0; b < a.output_batch_size(); ++b) {
+      std::vector<vart::NpuTensor> row;
+      for (std::size_t t = 0; t < oi.size(); ++t) {
+        row.push_back(a.allocate_npu_tensor(oi[t]));
+      }
+      batch_out.push_back(std::move(row));
+    }
     output_tensors.push_back(std::move(batch_out));
   }
   return true;
@@ -629,6 +664,12 @@ int main(int argc, char* argv[]) {
     if (int rc = validate_parsed_options(num_iteration, dry_run, input_path); rc != 0) {
       return rc;
     }
+    vart::TensorType input_tensor_type = vart::TensorType::HW;
+    vart::TensorType output_tensor_type = vart::TensorType::HW;
+    if (!parse_tensor_type("input", vm["input-tensor-type"].as<std::string>(), input_tensor_type) ||
+        !parse_tensor_type("output", vm["output-tensor-type"].as<std::string>(), output_tensor_type)) {
+      return 1;
+    }
     if (num_iteration < VartInferAsync::kNumConcurrentJobs) {
       const std::uint32_t requested = num_iteration;
       num_iteration = VartInferAsync::kNumConcurrentJobs;
@@ -643,10 +684,10 @@ int main(int argc, char* argv[]) {
     // ---------------------------------------------------------------------------
     // Model init and buffer allocation: VAIML runner + per-slot input/output pools.
     // ---------------------------------------------------------------------------
-    // Opens the compiled model cache at model_path and constructs a VAIML runner; runner options
-    // (tensor layouts, log level, etc.) are fixed in VartInferAsync::create_runner() in
-    // vart_infer_async.cpp.
-    VartInferAsync infer(model_path);
+    // Opens the compiled model cache at model_path and constructs a VAIML runner; the input/output
+    // tensor types (HW or CPU) are selected from the CLI and forwarded to the runner in
+    // VartInferAsync::create_runner() in vart_infer_async.cpp.
+    VartInferAsync infer(model_path, input_tensor_type, output_tensor_type);
     if (infer.input_tensors_info().size() > 1) {
       std::cerr
           << "[ERROR] This example supports only single input tensor. Please use a model with single input tensor.\n";
@@ -662,11 +703,11 @@ int main(int argc, char* argv[]) {
     // IFM load and zero-copy staging: Loads data from input file (or random fill),
     // then memcpy into each pool slot's HW input tensors (buffers already backed by NPU memory).
     // ---------------------------------------------------------------------------
-    // load_ifm_buffer_for_model: IFM file is concatenated sample rows; load_input_binary uses model batch_size.
-    // Partial batches are supported: fewer than batch_size full rows may be read when the file is short,
-    // as long as at least one complete sample row exists. If the file size is smaller than one frame
-    // (bytes_per_frame), load_input_binary throws exception.
-    // If --dry-run is set, generates random bytes for kDefaultDryRunFrameCount * batch_size sample rows.
+    // load_ifm_buffer_for_model: IFM file is concatenated sample rows; load_input_binary uses the model's
+    // input batch size. Partial batches are supported: fewer than input_batch_size full rows may be read
+    // when the file is short, as long as at least one complete sample row exists. If the file size is
+    // smaller than one frame (bytes_per_frame), load_input_binary throws exception.
+    // If --dry-run is set, generates random bytes for kDefaultDryRunFrameCount * input_batch_size sample rows.
     LoadedIfmBuffer ifm = load_ifm_buffer_for_model(infer, dry_run, input_path);
     // ifm.num_frames is the number of sample rows loaded (see load_input_binary / load_input_random).
     const std::size_t ifm_sample_rows = ifm.num_frames;
@@ -682,7 +723,7 @@ int main(int argc, char* argv[]) {
     // 1) To showcase a zero-copy path into NPU-backed tensors, this sample loads every job slot
     //    with the same IFM payload (logical frame 0) — memcpy into preallocated vart::NpuTensor
     //    buffers, no extra host staging heap for per-slot distinct frames.
-    // 2) copy_frame_to_slot copies one full batch (batch_size sample rows) into each pool slot k.
+    // 2) copy_frame_to_slot copies one full batch (input_batch_size sample rows) into each pool slot k.
     // 3) In a real deployment, each slot would typically be fed from a camera stream, a
     //    preprocessor, or another producer instead of duplicating the same frame everywhere.
     for (std::uint32_t k = 0; k < VartInferAsync::kNumConcurrentJobs; ++k) {
@@ -703,6 +744,7 @@ int main(int argc, char* argv[]) {
     // recycle that slot, and submit the next frame.
     std::optional<std::chrono::high_resolution_clock::time_point> t_async_0;
     std::optional<std::chrono::high_resolution_clock::time_point> t_async_1;
+    std::vector<PerfEntry> perf_rows;
     if (benchmark) {
       t_async_0 = std::chrono::high_resolution_clock::now();
     }
@@ -713,7 +755,7 @@ int main(int argc, char* argv[]) {
                          N_frames, N_output_frames);
     if (benchmark) {
       t_async_1 = std::chrono::high_resolution_clock::now();
-      log_infer_pass_wall_time("async infer pass", *t_async_0, *t_async_1, N_frames);
+      append_perf_rows(perf_rows, "Async infer pass", *t_async_0, *t_async_1, N_frames, infer.input_batch_size());
     }
 
     // ---------------------------------------------------------------------------
@@ -725,7 +767,11 @@ int main(int argc, char* argv[]) {
       run_sync_infer_pass(infer, input_tensors, output_tensors, N_frames, write_ofm_files, num_iteration,
                           N_output_frames);
       const auto t_sync_1 = std::chrono::high_resolution_clock::now();
-      log_infer_pass_wall_time("sync infer pass", t_sync_0, t_sync_1, N_frames);
+      append_perf_rows(perf_rows, "Sync infer pass", t_sync_0, t_sync_1, N_frames, infer.input_batch_size());
+    }
+
+    if (benchmark && !perf_rows.empty()) {
+      print_perf_table("Pass", perf_rows);
     }
 
     if (!benchmark) {

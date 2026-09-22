@@ -30,8 +30,8 @@ In both modes the IFM and OFM device buffers are shared end-to-end via dma-buf, 
 - **Two tensor-binding modes in one binary** — default zero-copy (HW tensor type) and `-c` / `--non-zero-copy` (CPU tensor type); see [Tensor-type modes](#tensor-type-modes).
 - **Zero-copy IFM bridge** — preprocess output is bound to the runner via `NpuTensor(meta, &fd, DMA_FD)` (same physical buffer as preprocess output) in both modes.
 - **Zero-copy OFM bridge** — the runner-allocated OFM `NpuTensor` is exported as a dma-buf fd and imported as `vart::Memory(MemoryImplType::XRT, fd, size, device)`, which is then passed straight to `PostProcess::process(vector<vector<shared_ptr<vart::Memory>>>, batch)` — no staging OFM copy in either mode.
-- **Built-in per-frame benchmark** — `-n / --runs N` prints per-stage averages and the `throughput (infer)` / `throughput (pipeline)` FPS lines on stdout; see [Comparing zero-copy vs non-zero-copy](#comparing-zero-copy-vs-non-zero-copy) for more info.
-- **Single-threaded, sequential pipeline** — decode, preprocess, `Runner::execute`, postprocess and display all run on the same thread with no overlap, so benchmark stage averages are wall-clock latencies of each call in isolation.
+- **Built-in per-frame benchmark** — `-n / --runs N` prints a per-stage `Performance` table (PreProcess, Inference, PostProcess, Pipeline) with the average `Time` per stage and the `Pipeline` throughput (FPS) on stdout; see [Comparing zero-copy vs non-zero-copy](#comparing-zero-copy-vs-non-zero-copy) for more info.
+- **Single-threaded, sequential pipeline** — decode, preprocess, `Runner::execute`, postprocess and display all run on the same thread with no overlap, so the reported inference time is the wall-clock latency of the `Runner::execute` call in isolation.
 - **Frame reused across iterations** — one JPEG is loaded and uploaded once per invocation; with `-n / --runs N` the timed loop reuses the same already-bound IFM/OFM buffers, so each iteration only re-runs `preprocess` → `infer` → `postprocess` on that frame.
 - **ImageNet-style classification defaults** — ships configured for ResNet-50 (ImageNet mean/scale preprocess, softmax + top-K labels postprocess); retarget for other models via the [Hardcoded Configuration](#hardcoded-configuration-change-here-for-your-model) table.
 
@@ -66,7 +66,7 @@ vart_zerocopy -i <image.jpg> -m <model_path> [-c | --non-zero-copy] [-n <N> | --
 ### Output
 
 - Top-K labels printed to the console once per run (see [Application Flow](#application-flow) step 5).
-- When `-n / --runs N` is set, an additional benchmark block is printed at the end with per-stage averages (`preprocess`, `infer`, `postprocess`, `total`) and `throughput (infer)` / `throughput (pipeline)` in FPS; see [Comparing zero-copy vs non-zero-copy](#comparing-zero-copy-vs-non-zero-copy) for how to read it.
+- When `-n / --runs N` is set, an additional benchmark block is printed at the end: a per-stage `Performance` table (PreProcess / Inference / PostProcess / Pipeline) with the average `Time` per stage (ms/frame; Inference in `ms/inference (dp_size=N)`, where `N` is the model's Data Parallelism size - the model is replicated across `N` HW instances, and one inference call runs it in parallel on all of them at once) and the `Pipeline` throughput in FPS (`1000 / total_ms`, i.e. frames per second = 1000 ms-per-second divided by `total_ms`, the average per-frame pipeline latency in milliseconds); see [Comparing zero-copy vs non-zero-copy](#comparing-zero-copy-vs-non-zero-copy) for how to read it.
 
 ## Build
 
@@ -111,7 +111,7 @@ Before running the commands below, finish board setup for your platform, program
 
   *Example:*
   ```bash
-  vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8
+  vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8/resnet50_int8.rai
   ```
 
 - **Print CLI options:**
@@ -121,12 +121,12 @@ Before running the commands below, finish board setup for your platform, program
 
 - **Benchmark the zero-copy (HW tensor type) path:**
   ```bash
-  vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8 -n 100
+  vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8/resnet50_int8.rai -n 100
   ```
 
 - **Benchmark the non-zero-copy (CPU tensor type) path on the same image:**
   ```bash
-  vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8 -n 100 -c
+  vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8/resnet50_int8.rai -n 100 -c
   ```
 
 See [Comparing zero-copy vs non-zero-copy](#comparing-zero-copy-vs-non-zero-copy) for how to read the benchmark output.
@@ -154,7 +154,7 @@ Runtime phases. All steps run on a single thread, sequentially.
    - print top label(s) to the console
 6. **Benchmark (when `-n / --runs N` is set)**
    - silence per-step logs, run a fixed 1-iteration warmup on the already-bound buffers, then run the timed loop
-   - print per-stage averages plus `throughput (infer)` / `throughput (pipeline)`; see [Comparing zero-copy vs non-zero-copy](#comparing-zero-copy-vs-non-zero-copy)
+   - print the per-stage `Performance` table (PreProcess / Inference / PostProcess / Pipeline `Time`, plus the `Pipeline` throughput); see [Comparing zero-copy vs non-zero-copy](#comparing-zero-copy-vs-non-zero-copy)
 
 ## Tensor-type modes
 
@@ -221,20 +221,20 @@ See the detailed comment block on `VartZerocopyPipeline::allocate_buffers()` in 
 
 ## Comparing zero-copy vs non-zero-copy
 
-The same binary demonstrates both flows end-to-end. To see the performance gain that zero copy provides, run the two benchmark commands back to back on the same image and compare the `throughput (infer)` line of the printed benchmark block:
+The same binary demonstrates both flows end-to-end. To see the performance gain that zero copy provides, run the two benchmark commands back to back on the same image and compare the `Inference` row's `Time` (and the `Pipeline` throughput) of the printed `Performance` table:
 
 ```bash
 # Zero-copy (default, HW tensor type)
-vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8 -n 100
+vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8/resnet50_int8.rai -n 100
 
 # Non-zero-copy (CPU tensor type)
-vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8 -n 100 -c
+vart_zerocopy -i /etc/vai/models/resnet50_int8/data/classification.jpg -m /etc/vai/models/resnet50_int8/resnet50_int8.rai -n 100 -c
 ```
 
 How to read the output:
 
-- `throughput (infer)` isolates `vart::Runner::execute` and is the line the mode switch actually moves. Zero-copy will report a higher FPS than non-zero-copy because the NPU consumes the HW-layout IFM and produces the HW-layout OFM directly from CMA buffers, with no per-call CPU<->HW translation, and no internal staging inside the runner.
-- `throughput (pipeline)` rolls in preprocess and postprocess. Both stages also move slightly between modes (different preprocess `VideoFormat`, different postprocess dequant path) but the dominant delta comes from the infer line.
+- The `Inference` `Time` (`ms/inference (dp_size=N)`) is the `vart::Runner::execute` latency in isolation and is the number the mode switch actually moves. Zero-copy reports a lower inference time than non-zero-copy because the NPU consumes the HW-layout IFM and produces the HW-layout OFM directly from CMA buffers, with no per-call CPU<->HW translation, and no internal staging inside the runner.
+- `Pipeline` throughput (`1000 / total_ms` — frames per second, obtained by dividing 1000 ms-per-second by `total_ms`, the average per-frame pipeline latency in milliseconds) rolls in preprocess, inference and postprocess. It improves in zero-copy mode primarily via the inference delta (preprocess/postprocess also shift slightly because each stage handles a different data format per mode).
 - The NPU job itself is identical between modes (same compiled graph, same HW IFM bytes consumed, same HW OFM bytes produced). The infer delta is entirely runner-side CPU<->HW conversion and internal staging in non-zero-copy mode.
 
 > **Note:** For `-n / --runs > 1`, the same input frame is reused across iterations. This demo is intended for performance comparison, not for processing different inputs.

@@ -14,9 +14,9 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
 - **`ml_ort`** – An ONNX Runtime-based C++ application that runs ONNX models using the Vitis AI execution provider.
 - **`ml_vart`** – A C++ application that runs Vitis AI compiled ONNX models using VART-ML APIs.
-- **`x_plus_ml_ort`** – End-to-end [**X+ML**](../docs/glossary.md#amd-software-stacks) sample: a C++ application based on ONNX Runtime that runs ONNX models (machine learning components) using the Vitis AI execution provider. Components like preprocessing, postprocessing, and overlay (which displays post-processed predictions on the output) are implemented using VART-X APIs. It can scale up to 2 models and execute them sequentially on a temporal basis.
+- **`x_plus_ml_ort`** – End-to-end [**X+ML**](../docs/glossary.md#amd-software-stacks) sample: a C++ application based on ONNX Runtime that runs ONNX models (machine learning components) using the Vitis AI execution provider. Components like preprocessing, postprocessing, and overlay (which displays post-processed predictions on the output) are implemented using VART-X APIs. The shipped `temporal_x_plus_ml_ort.json` example runs two models sequentially with temporal sharing; `models-config` can list more.
 - **`x_plus_ml_vart`** – This application runs Vitis AI compiled ONNX models using VART-ML APIs. The compiled model should be entirely offloaded to the NPU to execute this application effectively. It follows the same [**X+ML**](../docs/glossary.md#amd-software-stacks) pattern as `x_plus_ml_ort` (PL preprocessing plus NPU inference with VART-X I/O). JSON can describe **1..N** models with spatial and/or temporal placement (see that app’s README).
-- **`spatial_mt_ml_ort`**:  The spatial multi-threading inference application runs ResNet50 and ResNet18 models in separate threads showcasing the spatial loading of models on the AI Engine. Runs ML with ONNX Runtime APIs. Components like preprocessing, postprocessing, and overlay (which displays post-processed predictions on the output) are implemented using VART-X APIs.
+- **`spatial_mt_ml_ort`**:  The spatial multi-threading inference application runs ResNet-50 INT8 and YOLOX-m INT8 in separate threads showcasing the spatial loading of models on the AI Engine. Runs ML with ONNX Runtime APIs. Components like preprocessing, postprocessing, and overlay (which displays post-processed predictions on the output) are implemented using VART-X APIs.
 - **`vart_zerocopy`** – A standalone VART zero-copy image pipeline sample (decode -> preprocess -> zero-copy IFM bind -> infer -> postprocess).
 - **`vart_multimodel_seq`** – A VART-based multi-model sequential runner for temporal model execution.
 - **`vart_multi_tenancy`** – A VART multi-tenancy sample for concurrent model execution scenarios.
@@ -77,10 +77,10 @@ Complete the following on the board before launching applications:
 - Configure the board and runtime environment as needed for your image. After boot, set `LD_LIBRARY_PATH` once in the shell where you run binaries:
 
 ```bash
-export LD_LIBRARY_PATH=/usr/lib/python3.12/site-packages/voe/lib:\
-/usr/lib/python3.12/site-packages/flexmlrt/lib:\
-/usr/lib/python3.12/site-packages/onnxruntime/capi
+export LD_LIBRARY_PATH=/usr/lib/python3.12/site-packages/voe/lib:/usr/lib/python3.12/site-packages/flexmlrt/lib:/usr/lib/python3.12/site-packages/onnxruntime/capi:/usr/lib/python3.12/site-packages/vart_ml/lib:/usr/lib/python3.12/site-packages/vart_x/lib
 ```
+
+VART-ML and VART-X are installed as wheels under site-packages (`vart_ml/lib`, `vart_x/lib`).
 
 - For prebuilt runs, confirm required assets exist under `/etc/vai/models/` and application JSON under `/etc/vai/<app_name>/json_configs/` (see each app README).
 

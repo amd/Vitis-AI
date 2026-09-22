@@ -22,7 +22,7 @@ A C++ sample application that demonstrates how to build an end-to-end inference 
 - **Three input-source modes** selected by `preprocess-en` and the presence of `--input-file`: CLI broadcast (one file shared across all models), per-model preprocess (each model reads its own file), and inference-only (each model reads `.bin` IFMs from its `ifms-config`).
 - **VART-X PostProcess + MetaConvert + Overlay** pipeline for classification, detection, and segmentation models, accepting any `vart::PostProcessType` exposed by VART-X.
 - **Iteration-aware output naming** that switches between single-iteration and multi-iteration filenames automatically.
-- **Built-in benchmarking** option that disables file I/O and reports per-stage averages plus pipeline FPS.
+- **Built-in benchmarking** option that disables file I/O and reports per-stage latencies (preprocess, inference, postprocess, pipeline) and throughput per model instance in a standardized `Performance` table.
 
 ## Usage
 
@@ -39,7 +39,7 @@ x_plus_ml_vart --app-config <config json file> [--input-file <input image file> 
 | `--app-config`      | Mandatory      |         | Path to configuration JSON file (mandatory).                 |
 | `--input-file`      | Mode-dependent |         | Input image path for preprocess modes; required for CLI broadcast (`preprocess-en` true + shared CLI input), omitted for per-model preprocess, and must not be passed in inference-only mode (see [Input](#input)). |
 | `--runs`            | Optional       | `1`     | Number of iterations to run (optional, default `1`; valid range `[1, 10000]` — see Argument validation). |
-| `--benchmark`       | Optional       | `false` | Measure per-stage timings and pipeline FPS; disables OFM and overlay file writes (optional, default `false`). |
+| `--benchmark`       | Optional       | `false` | Report per-stage latencies (preprocess/inference/postprocess/pipeline) and throughput per model instance in a `Performance` table; disables OFM and overlay file writes (optional, default `false`). |
 | `--log-level`       | Optional       | `2`     | Application log level (optional, default `2`). Accepted values: `1` ERROR, `2` WARNING, `3` INFERENCE RESULT, `4` FIXME, `5` INFO, `6` DEBUG. The chosen level and all lower-numbered levels are printed. |
 | `--dim`             | Optional       |         | Resolution `WxH` for raw NV12/BGR when using CLI `--input-file` (mandatory for `.nv12`/`.bgr` in that mode); ignored for JPEG and in per-model preprocess / inference-only modes (with a warning where applicable). |
 | `--frames`          | Optional       | `-1`    | Frames processed per iteration (`-1` = all: one for JPEG, `file_size / frame_size` for NV12/BGR clip, IFM count for `.bin`); effective upper bound with `--runs N` is `N × frames` (see Argument validation). |
@@ -82,7 +82,7 @@ To discover the `vart::Runner`-reported input-tensor names (needed to author eac
 
 #### Batch processing
 
-The batch size `N` is fixed by the compiled model and cannot be changed at runtime. Query it (and per-tensor `size_in_bytes`, always per frame) with `ml_vart --get-model-info <model-path>` - see [ml_vart/README.md](../ml_vart/README.md). The application handles the batch slicing automatically across all three input modes:
+The batch size `N` is fixed by the compiled model and cannot be changed at runtime. Query it (`input_batch_size`, and per-tensor `size_in_bytes`, always per frame) with `ml_vart --get-model-info <model-path>` - see [ml_vart/README.md](../ml_vart/README.md). The application handles the batch slicing automatically across all three input modes:
 
 - **Preprocess modes** (`preprocess-en: true`): the file reader pulls `N` consecutive frames from each input source (CLI broadcast file or per-model `ifms-config` file) per inference call. JPEG inputs are inherently single-frame, so JPEG runs use batch size 1 regardless of model `N`; NV12/BGR clips and binary inputs supply enough frames to fill full batches.
 - **Inference-only mode** (`preprocess-en: false`): each `.bin` listed in `ifms-config` must contain `total_frames * per_frame_size_in_bytes` bytes of raw tensor data, with frames concatenated back-to-back in the layout `vart::Runner` expects. All input files for a given model must contain the same total number of frames; the application takes `N` consecutive frames from each tensor's file per inference call, with the same frame index across all files forming one batch element. Partial batches at end-of-file are handled automatically - the final inference call runs with fewer frames, no padding or wraparound, and only the populated slots are written to the output files.
@@ -142,8 +142,6 @@ make clean
 
 ### Board Environment Setup
 
-Refer to the board setup guide for instructions on setting up the board environment. _(Link pending - TODO)_
-
 The binary (`x_plus_ml_vart`), JSON configs (`/etc/vai/x_plus_ml_vart/json_configs/`), and model artifacts including sample JPEG inputs and `.bin` IFMs (`/etc/vai/models/<model>/`) are all pre-installed, so the commands below run as-is on the board. The NV12/BGR examples are an exception and require an externally supplied raw clip in place of the `<input_nv12_file>` placeholder.
 
 ### Prerequisites
@@ -200,38 +198,122 @@ x_plus_ml_vart --app-config /etc/vai/x_plus_ml_vart/json_configs/x_plus_ml_vart_
 
 The complete JSON schema (field types, defaults, required/optional, supported color formats, accepted postprocess `type` values, and per-mode validation rules) is documented in [json_configs/README.md](json_configs/README.md).
 
+## Executing Models Containing CPU Subgraphs
+
+A Vitis AI–compiled model is not always executed entirely on the NPU. Some operations may be unsupported on (or better suited to) the CPU. The compiler places those operations in **CPU subgraphs** that run on the host CPU, while the rest of the model runs on the NPU. A single compiled model can therefore have a CPU subgraph at its **input** boundary, its **output** boundary, both, or neither.
+
+VART-ML executes these CPU subgraphs **internally, within the same `vart::Runner`** — no separate runner and no extra `execute()` call are required. The only requirement is that the application select the correct tensor *type* for each direction when the runner is created. Because `x_plus_ml_vart` hosts one `vart::Runner` per entry of `models-config`, the tensor type is configured **per model**, in that model's own `inference-config.runner-options`.
+
+### Tensor types: `CPU` vs `HW`
+
+For each direction (input and output) the runner can expose the tensors in one of two formats:
+
+| Type  | Format                                | Typical data type / layout |
+| ----- | ------------------------------------- | -------------------------- |
+| `HW`  | Hardware-native (NPU-accepted) format | e.g. BF16, HCWNC4 layout   |
+| `CPU` | Standard ONNX format                  | e.g. FP32, NCHW layout     |
+
+Use the companion `ml_vart --get-model-info <model-path>` flag to inspect both views per tensor (see [ml_vart/README.md](../ml_vart/README.md)). If a boundary has no HW view for a tensor, that boundary is a CPU subgraph and must be driven with the `CPU` type.
+
+Rules:
+
+- A boundary that is a **CPU subgraph** has **no HW tensor type** for that direction — it must use the `CPU` type. Creating the runner with `HW` for such a direction **fails**.
+- A boundary that is an **NPU (HW) subgraph** can use **either** `CPU` or `HW`.
+
+### Configuring the tensor type
+
+The tensor type is selected per direction through the `input-tensor-type` / `output-tensor-type` fields of each model's `inference-config.runner-options`:
+
+| Field                 | Type   | Default | Values       | Description                               |
+| --------------------- | ------ | ------- | ------------ | ----------------------------------------- |
+| `input-tensor-type`   | String | `HW`    | `CPU` / `HW` | Type used for the model's input tensors.  |
+| `output-tensor-type`  | String | `HW`    | `CPU` / `HW` | Type used for the model's output tensors. |
+
+Per-tensor overrides are also supported via:
+
+- `input-tensor-type.<tensor_name>`
+- `output-tensor-type.<tensor_name>`
+
+where `<tensor_name>` must match the runner-reported tensor name from `ml_vart --get-model-info`.
+
+Behaviour:
+
+- **Field not specified** → defaults to global (fully backward compatible).
+- **`CPU` / `HW`** (case-sensitive, uppercase) → used as given.
+- **Any other value**, for either the global or a per-tensor field → `create_runner()` fails and the application exits.
+- **Per-tensor override with unknown tensor name** → `create_runner()` fails. Tensor names must match the model's tensor names (use `ml_vart --get-model-info` to discover them).
+
+Per-tensor overrides are passed to the runner during creation. The application then allocates `NpuTensor` objects matching each tensor's effective type and passes them to `execute()`. For example, if a tensor is overridden to `CPU`, a CPU `NpuTensor` is allocated and passed for that tensor.
+
+See [runner_options.md](../../docs/runner_options.md) for the full `runner-options` schema.
+
+> **Important:** When a direction uses the `CPU` type, the corresponding IFM / OFM binary files must be in standard **ONNX format** (matching the CPU tensor shapes and data types), not the HW-native layout. In inference-only mode (`preprocess-en: false`), the `.bin` files listed in `ifms-config` must therefore contain CPU-format tensor data, and their sizes are validated against the CPU tensor sizes during initialization.
+
+> **Preprocessing interaction:** When preprocessing is enabled (`preprocess-en: true`), the HLS `image_processing` kernel feeds the model input, so `input-tensor-type` must match what the pre-processor produces. A model with a **CPU input subgraph** is therefore typically run in **inference-only mode** (`preprocess-en: false`) with `input-tensor-type: "CPU"`, supplying the CPU-format IFM directly through `ifms-config`. A **CPU output subgraph** (`output-tensor-type: "CPU"`) works with any mode. See the tensor-type / pre-processing note in [runner_options.md](../../docs/runner_options.md).
+
+### Sample per-model `config.json`
+
+The example below runs a model in inference-only mode whose input boundary is a CPU subgraph (`input-tensor-type: "CPU"`) while its output stays on the NPU (`output-tensor-type: "HW"`):
+
+```json
+{
+  "inference-config": {
+    "model-file": "/etc/vai/models/modelA/modelA.rai",
+    "runner-options": {
+      "log-level": "ERROR",
+      "input-tensor-type": "CPU",
+      "output-tensor-type": "HW"
+    }
+  },
+  "ifms-config": [
+    {
+      "name": "input",
+      "file": "/etc/vai/models/modelA/data/ifm_input_fp32_1x3x224x224.bin"
+    }
+  ]
+}
+```
+
 ## Benchmarking and Performance Analysis
 
-The `--benchmark` flag disables file writes and reports per-stage latency and pipeline FPS for every model instance:
+
+The `--benchmark` flag disables file writes and reports a standardized `Performance` table with the per-stage latencies and throughput for every model instance (one row per `Model N`):
 
 ```bash
 x_plus_ml_vart --app-config /etc/vai/x_plus_ml_vart/json_configs/x_plus_ml_vart_1model.json --input-file /etc/vai/models/resnet50_int8/data/classification.jpg --benchmark --runs 100
 ```
 
-Steady-state metrics reported per model instance (preprocess and postprocess lines only appear when those stages are enabled):
+The `Performance` table lists, per model, one row per pipeline stage (`Category`). **All values are averages over the run:**
 
-- `Average PreProcess latency` - ms/frame
-- `Average Inference latency` - ms/batch
-- `Average PostProcess latency` - ms/frame
-- `Average pipeline latency` - ms/frame, sum of the enabled stages
-- `Average throughput` - end-to-end FPS, bounded by the slowest stage
+- `Models` - model instance label (shown once per model group; blank on continuation rows)
+- `Category` - pipeline stage: `PreProcess`, `Inference`, `PostProcess`, `Pipeline`
+- `Time` - average latency for that stage (`ms/frame`, except `Inference` which is `ms/inference (dp_size=N)`, where `N` is the model's Data Parallelism size - the model is replicated across `N` HW instances, and one inference call runs it in parallel on all of them at once); `-` when the stage is disabled
+- `Throughput (FPS)` - average end-to-end throughput, reported for the `Pipeline` row only; computed as `1000 / Pipeline time` (the reciprocal of the summed per-frame pipeline latency), consistent with `x_plus_ml_ort` and `spatial_mt_ml_ort`
+
+`Pipeline` latency is the sum of the enabled stages (ms/frame).
 
 Sample output (full pipeline, 100 iterations of a batch-1 ResNet50):
 
 ```
 Total number of frames processed: 100
 ---------------------------------------------------------------------------------------
-Model [/etc/vai/models/resnet50_int8/resnet50_int8.rai] with device batch size 1 processed 100 frames
-Steady-State Benchmark Results [Pipeline: Preprocess + Inference + Postprocess]...
-Average PreProcess latency   : 0.30081 ms/frame
-Average Inference latency    : 2.14292 ms/batch
-Average PostProcess latency  : 0.08108 ms/frame
-Average pipeline latency     : 2.52481 ms/frame
-Average throughput           : 466.653 FPS
+Model [/etc/vai/models/resnet50_int8/resnet50_int8.rai] with Data Parallelism size (dp_size) 1 processed 100 frames
++---------+-------------+---------------------------------+------------------+
+|                             Performance                                    |
++---------+-------------+---------------------------------+------------------+
+| Models  | Category    | Time                             | Throughput (FPS) |
++---------+-------------+---------------------------------+------------------+
+| Model 1 | PreProcess  | xx.xx ms/frame                   | -                |
+|         | Inference   | xx.xx ms/inference (dp_size=1)   | -                |
+|         | PostProcess | xx.xx ms/frame                   | -                |
+|         | Pipeline    | xx.xx ms/frame                   | xxx.xx           |
++---------+-------------+---------------------------------+------------------+
+All values are averages over the run. Throughput (FPS) is reported for the Pipeline only.
+Pipeline Throughput (FPS) = 1000 / Pipeline time (ms per frame).
 ---------------------------------------------------------------------------------------
 ```
 
-The `[Pipeline: ...]` tag reflects which stages were active for that instance, and the latency lines for disabled stages are omitted accordingly.
+For multiple models, each model forms its own group separated by a divider row; disabled preprocess/postprocess stages show `-` in the `Time` column.
 
 ## Additional Considerations
 

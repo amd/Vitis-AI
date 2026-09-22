@@ -23,6 +23,7 @@
 
 #include <getopt.h>
 #include <array>
+#include <cstring>
 #include <boost/program_options.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -32,9 +33,11 @@
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <vart/vart_runner_factory.hpp>
 #include "common/app_logger.hpp"
+#include "common/app_utils.hpp"
 
 using namespace std;
 namespace fs = std::filesystem;
@@ -130,6 +133,10 @@ enum class vart_app_status : int { SUCCESS = 0, FAILURE = -1 };
  *   current runner. Default is CMA index 0.
  * - is_cma_index_set: Whether cma_index was explicitly configured.
  * - ai_analyzer_profiling: Enable or disable AI Analyzer profiling. Default false.
+ * - input_tensor_type: Default tensor type for all input tensors. Accepted values: "HW" or "CPU".
+ * - output_tensor_type: Default tensor type for all output tensors. Accepted values: "HW" or "CPU".
+ * - in_tensor_type_map: Per-tensor type overrides for individual input tensors (keyed by tensor name).
+ * - out_tensor_type_map: Per-tensor type overrides for individual output tensors (keyed by tensor name).
  */
 struct runner_opt {
   std::string model_cache_dir;
@@ -138,11 +145,14 @@ struct runner_opt {
   bool aie_columns_sharing;
   uint32_t start_column;
   bool is_start_column_set;
-  int32_t cma_index;
+  uint32_t cma_index;
   bool is_cma_index_set;
   bool ai_analyzer_profiling;
   std::string input_tensor_type;
   std::string output_tensor_type;
+  std::string name;
+  std::unordered_map<std::string, std::string> in_tensor_type_map;
+  std::unordered_map<std::string, std::string> out_tensor_type_map;
 
   /**
    * @brief Constructor to initialize model configuration with default values
@@ -159,8 +169,8 @@ struct runner_opt {
     ai_analyzer_profiling = false;
     input_tensor_type = "HW";
     output_tensor_type = "HW";
+    name = "VAIML-Runner";
   }
-
 }; /* runner_opt */
 
 /**
@@ -281,10 +291,17 @@ static void print_runner_opt(const runner_opt& opt, AppLogLevel app_log) {
   if (opt.is_start_column_set)
     APP_LOG(AppLogLevel::INFO, app_log, "start_column: %u", opt.start_column);
   if (opt.is_cma_index_set)
-    APP_LOG(AppLogLevel::INFO, app_log, "cma_index: %d", opt.cma_index);
+    APP_LOG(AppLogLevel::INFO, app_log, "cma_index: %u", opt.cma_index);
   APP_LOG(AppLogLevel::INFO, app_log, "ai_analyzer_profiling: %s", opt.ai_analyzer_profiling ? "true" : "false");
   APP_LOG(AppLogLevel::INFO, app_log, "input_tensor_type: %s", opt.input_tensor_type.c_str());
   APP_LOG(AppLogLevel::INFO, app_log, "output_tensor_type: %s", opt.output_tensor_type.c_str());
+  for (const auto& entry : opt.in_tensor_type_map) {
+    APP_LOG(AppLogLevel::INFO, app_log, "input_tensor_type.%s: %s", entry.first.c_str(), entry.second.c_str());
+  }
+  for (const auto& entry : opt.out_tensor_type_map) {
+    APP_LOG(AppLogLevel::INFO, app_log, "output_tensor_type.%s: %s", entry.first.c_str(), entry.second.c_str());
+  }
+  APP_LOG(AppLogLevel::INFO, app_log, "name: %s", opt.name.c_str());
   APP_LOG(AppLogLevel::INFO, app_log, "******************************************");
 }
 
@@ -533,7 +550,8 @@ static std::string get_rounding_mode_string(vart::RoundingMode mode) {
  */
 class app_context {
  private:
-  size_t m_batch_size;
+  size_t m_input_batch_size;
+  size_t m_output_batch_size;
 
   /* application options */
   app_opt m_app_opt;
@@ -588,7 +606,8 @@ class app_context {
     m_input_tensors_info.clear();
     m_output_tensors_info.clear();
     m_quant_params.clear();
-    m_batch_size = 1;
+    m_input_batch_size = 1;
+    m_output_batch_size = 1;
 
     /* Deallocate tensors allocated by runner */
     deallocate_tensors();
@@ -602,7 +621,8 @@ class app_context {
   void print_tensor_metadata() {
     APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Number of input tensors: %zu", m_num_input_tensors);
     APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Number of output tensors: %zu", m_num_output_tensors);
-    APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Batch size: %zu", m_batch_size);
+    APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Input batch size: %zu", m_input_batch_size);
+    APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Output batch size: %zu", m_output_batch_size);
 
     APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Input Tensors Info:");
     for (size_t i = 0; i < m_input_tensors_info.size(); ++i) {
@@ -621,6 +641,121 @@ class app_context {
       APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Tensor: %s, Scale: %f, Zero Point: %d, Rounding Mode: %s",
               name.c_str(), params.scale, params.zero_point, get_rounding_mode_string(params.rounding_mode).c_str());
     }
+  }
+
+  /**
+   * @brief Convert tensor type string to vart::TensorType enum.
+   * @param tensor_type Tensor type string ("CPU" or "HW").
+   * @return Corresponding vart::TensorType value.
+   * @throws std::invalid_argument if tensor_type is not "CPU" or "HW".
+   */
+  static vart::TensorType tensor_type_from_string(const std::string& tensor_type) {
+    if (tensor_type == "CPU") return vart::TensorType::CPU;
+    if (tensor_type == "HW") return vart::TensorType::HW;
+    throw std::invalid_argument("Invalid tensor type '" + tensor_type + "': must be 'CPU' or 'HW'");
+  }
+
+  /**
+   * @brief Build a tensor-name index for fast metadata lookup.
+   * @param tensors_info Tensor metadata vector.
+   * @return Map from tensor name to metadata entry pointer.
+   */
+  static std::unordered_map<std::string, const vart::NpuTensorInfo*> build_tensor_index(
+      const std::vector<vart::NpuTensorInfo>& tensors_info) {
+    std::unordered_map<std::string, const vart::NpuTensorInfo*> index;
+    index.reserve(tensors_info.size());
+    for (const auto& info : tensors_info) {
+      index[info.name] = &info;
+    }
+    return index;
+  }
+
+  /**
+   * @brief Resolve effective tensor metadata for one direction.
+   *
+   * Uses the global tensor type as default and applies per-tensor overrides
+   * when provided. Returns false if a selected view is unavailable.
+   *
+   * @param direction Tensor direction (INPUT or OUTPUT).
+   * @param global_type Default tensor type for this direction.
+   * @param per_tensor_type_map Per-tensor overrides keyed by tensor name.
+   * @param resolved_tensors_info Output metadata vector in resolved order.
+   * @return true on success, false on irrecoverable resolution failure.
+   */
+  bool resolve_tensors_for_direction(
+      vart::TensorDirection direction, vart::TensorType global_type,
+      const std::unordered_map<std::string, std::string>& per_tensor_type_map,
+      std::vector<vart::NpuTensorInfo>& resolved_tensors_info) {
+    /* Resolve one direction at a time (input or output) with a readable log label. */
+    const char* dir_name = direction == vart::TensorDirection::INPUT ? "input" : "output";
+
+    /* Fetch all available views so per-tensor selection can choose CPU/HW by name. */
+    const auto global_tensors_info = m_runner->get_tensors_info(direction, global_type);
+    const auto cpu_tensors_info = m_runner->get_tensors_info(direction, vart::TensorType::CPU);
+    const auto hw_tensors_info = m_runner->get_tensors_info(direction, vart::TensorType::HW);
+
+    /* Build O(1) lookup tables keyed by tensor name for each view. */
+    const auto global_tensors_index = build_tensor_index(global_tensors_info);
+    const auto cpu_tensors_index = build_tensor_index(cpu_tensors_info);
+    const auto hw_tensors_index = build_tensor_index(hw_tensors_info);
+
+    /* Build tensor names: global-view order first, then edge-only names. */
+    std::vector<std::string> tensor_names;
+    std::unordered_set<std::string> seen_names;
+    /* Reserve for global names plus possible edge-only names from the opposite view. */
+    tensor_names.reserve(global_tensors_info.size() +
+               (global_type == vart::TensorType::CPU ? hw_tensors_info.size()
+                                  : cpu_tensors_info.size()));
+
+    for (const auto& info : global_tensors_info) {
+      tensor_names.push_back(info.name);
+      seen_names.insert(info.name);
+    }
+
+    /* Pick the opposite view so CPU-only/HW-only edge tensors are not dropped. */
+    const auto& edge_tensors_info = global_type == vart::TensorType::CPU ? hw_tensors_info : cpu_tensors_info;
+    for (const auto& info : edge_tensors_info) {
+      /* Append only unseen names to keep stable order and avoid duplicates. */
+      if (seen_names.find(info.name) == seen_names.end()) {
+        tensor_names.push_back(info.name);
+        seen_names.insert(info.name);
+      }
+    }
+
+    resolved_tensors_info.clear();
+    resolved_tensors_info.reserve(tensor_names.size());
+
+    /* Resolve each tensor name to an effective type: override if present, else global. */
+    for (const auto& tensor_name : tensor_names) {
+      vart::TensorType selected_type = global_type;
+      auto override_it = per_tensor_type_map.find(tensor_name);
+      if (override_it != per_tensor_type_map.end()) {
+        /* A per-tensor override exists; it takes precedence for this tensor name. */
+        selected_type = tensor_type_from_string(override_it->second);
+      }
+
+      /* Pick the name index for the selected type and try direct lookup first. */
+      const auto& selected_index =
+          selected_type == vart::TensorType::CPU ? cpu_tensors_index : hw_tensors_index;
+      auto selected_it = selected_index.find(tensor_name);
+
+      if (selected_it != selected_index.end()) {
+        resolved_tensors_info.push_back(*(selected_it->second));
+        if (selected_type != global_type) {
+          APP_LOG(AppLogLevel::INFO, m_app_opt.app_log,
+                  "Applied per-tensor %s tensor type override: '%s' -> %s", dir_name, tensor_name.c_str(),
+                  vart::to_string(selected_type).data());
+        }
+      } else {
+        /* create_runner() validates overrides; missing view here is an internal error. */
+        APP_LOG(AppLogLevel::ERROR, m_app_opt.app_log,
+                "Unable to resolve %s tensor '%s' for type %s.", dir_name,
+                tensor_name.c_str(), vart::to_string(selected_type).data());
+        return false;
+      }
+    }
+
+    return true;
   }
 
  public:
@@ -650,21 +785,44 @@ class app_context {
    */
   vart_app_status get_tensor_metadata() {
     try {
-      /* Get tensors metadata */
+      /* Step 1: query tensor counts and batch size from the live runner. */
       m_num_input_tensors = m_runner->get_num_input_tensors();
       m_num_output_tensors = m_runner->get_num_output_tensors();
-      m_batch_size = m_runner->get_batch_size();
+      m_input_batch_size = m_runner->get_batch_size(vart::TensorDirection::INPUT);
+      m_output_batch_size = m_runner->get_batch_size(vart::TensorDirection::OUTPUT);
+      APP_LOG(AppLogLevel::DEBUG, m_app_opt.app_log, "Input batch size: %zu, Output batch size: %zu",
+              m_input_batch_size, m_output_batch_size);
 
-      /* Get Tensor Information based on configured tensor types */
-      m_input_tensors_info = m_runner->get_tensors_info(vart::TensorDirection::INPUT, m_input_tensor_type);
-      m_output_tensors_info = m_runner->get_tensors_info(vart::TensorDirection::OUTPUT, m_output_tensor_type);
+      /* Step 2: resolve effective per-tensor views. */
+      if (!resolve_tensors_for_direction(vart::TensorDirection::INPUT, m_input_tensor_type,
+                                         m_runner_opt.in_tensor_type_map, m_input_tensors_info)) {
+        return vart_app_status::FAILURE;
+      }
+      if (!resolve_tensors_for_direction(vart::TensorDirection::OUTPUT, m_output_tensor_type,
+                                         m_runner_opt.out_tensor_type_map, m_output_tensors_info)) {
+        return vart_app_status::FAILURE;
+      }
 
-      /* Querying quantization parameters for HW input tensors */
+      /* Step 3: sanity-check resolved vectors against runner-reported counts. */
+      if (m_input_tensors_info.size() != m_num_input_tensors) {
+        APP_LOG(AppLogLevel::ERROR, m_app_opt.app_log,
+                "Resolved input tensor count mismatch: resolved=%zu, expected=%zu", m_input_tensors_info.size(),
+                m_num_input_tensors);
+        return vart_app_status::FAILURE;
+      }
+      if (m_output_tensors_info.size() != m_num_output_tensors) {
+        APP_LOG(AppLogLevel::ERROR, m_app_opt.app_log,
+                "Resolved output tensor count mismatch: resolved=%zu, expected=%zu", m_output_tensors_info.size(),
+                m_num_output_tensors);
+        return vart_app_status::FAILURE;
+      }
+
+      /* Step 4: cache quantization parameters for all resolved input tensors. */
       for (const auto& tensor_info : m_input_tensors_info) {
         m_quant_params[tensor_info.name] = m_runner->get_quant_parameters(tensor_info.name);
       }
 
-      /* Querying quantization parameters for HW output tensors */
+      /* Step 5: cache quantization parameters for all resolved output tensors. */
       for (const auto& tensor_info : m_output_tensors_info) {
         m_quant_params[tensor_info.name] = m_runner->get_quant_parameters(tensor_info.name);
       }
@@ -812,7 +970,8 @@ class app_context {
 
       ptree root;
       root.put("model_file", m_runner_opt.model_cache_dir);
-      root.put("batch_size", m_runner->get_batch_size());
+      root.put("input_batch_size", m_runner->get_batch_size(vart::TensorDirection::INPUT));
+      root.put("output_batch_size", m_runner->get_batch_size(vart::TensorDirection::OUTPUT));
 
       /* Build a name -> NpuTensorInfo lookup for the HW view so the merge
        * with the CPU view (driven from the CPU vector to preserve ordering
@@ -971,7 +1130,8 @@ class app_context {
 
       std::cout << "\n--- Model info ---\n";
       std::cout << "Model file        : " << m_runner_opt.model_cache_dir << "\n";
-      std::cout << "Batch size : " << m_runner->get_batch_size() << "\n";
+      std::cout << "Input batch size  : " << m_runner->get_batch_size(vart::TensorDirection::INPUT) << "\n";
+      std::cout << "Output batch size : " << m_runner->get_batch_size(vart::TensorDirection::OUTPUT) << "\n";
       print_tensor_list("Inputs", cpu_inputs, hw_input_idx);
       std::cout << "\n";
       print_tensor_list("Outputs", cpu_outputs, hw_output_idx);
@@ -1085,11 +1245,11 @@ class app_context {
    * @return Returns 0 on successful allocation, or an error code on failure.
    */
   int allocate_input_tensors() {
-    m_inputs.resize(m_batch_size);
+    m_inputs.resize(m_input_batch_size);
     APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Allocating input tensors: batch_size=%zu, num_tensors=%zu",
-            m_batch_size, m_num_input_tensors);
+            m_input_batch_size, m_num_input_tensors);
 
-    for (size_t i = 0; i < m_batch_size; ++i) {
+    for (size_t i = 0; i < m_input_batch_size; ++i) {
       m_inputs[i].reserve(m_num_input_tensors);
       for (size_t j = 0; j < m_num_input_tensors; ++j) {
         try {
@@ -1155,11 +1315,11 @@ class app_context {
    * @return Status of the operation
    */
   int allocate_output_tensors() {
-    m_outputs.resize(m_batch_size);
+    m_outputs.resize(m_output_batch_size);
     APP_LOG(AppLogLevel::DEBUG, m_app_opt.app_log, "Allocating output tensors: batch_size=%zu, num_tensors=%zu",
-            m_batch_size, m_num_output_tensors);
+            m_output_batch_size, m_num_output_tensors);
 
-    for (size_t i = 0; i < m_batch_size; ++i) {
+    for (size_t i = 0; i < m_output_batch_size; ++i) {
       m_outputs[i].reserve(m_num_output_tensors);
       for (size_t j = 0; j < m_num_output_tensors; ++j) {
         try {
@@ -1187,20 +1347,30 @@ class app_context {
     try {
       /* Create VART Runner */
       APP_LOG(AppLogLevel::INFO, m_app_opt.app_log, "Creating VART Runner...");
-      APP_LOG(AppLogLevel::DEBUG, m_app_opt.app_log,
-              "Runner options - log_level: %s, input_tensor_type: %s, output_tensor_type: %s, aie_columns_sharing: %s, "
+      APP_LOG(AppLogLevel::INFO, m_app_opt.app_log,
+              "Runner options - name: %s, log_level: %s, input_tensor_type: %s, output_tensor_type: %s, aie_columns_sharing: %s, "
               "ai_analyzer_profiling: %s",
-              m_runner_opt.log_level.c_str(), m_runner_opt.input_tensor_type.c_str(),
+              m_runner_opt.name.c_str(), m_runner_opt.log_level.c_str(), m_runner_opt.input_tensor_type.c_str(),
               m_runner_opt.output_tensor_type.c_str(), m_runner_opt.aie_columns_sharing ? "true" : "false",
               m_runner_opt.ai_analyzer_profiling ? "true" : "false");
 
       /* vart runner options */
       std::unordered_map<std::string, std::any> options = {
+          {"name", m_runner_opt.name},
           {"log_level", m_runner_opt.log_level},
           {"input_tensor_type", m_runner_opt.input_tensor_type},
           {"output_tensor_type", m_runner_opt.output_tensor_type},
           {"aie_columns_sharing", m_runner_opt.aie_columns_sharing},
           {"ai_analyzer_profiling", m_runner_opt.ai_analyzer_profiling}};
+
+      for (const auto& entry : m_runner_opt.in_tensor_type_map) {
+        std::string key = "input_tensor_type." + entry.first;
+        options[key] = entry.second;
+      }
+      for (const auto& entry : m_runner_opt.out_tensor_type_map) {
+        std::string key = "output_tensor_type." + entry.first;
+        options[key] = entry.second;
+      }
 
       /* Add config_json if specified */
       if (!m_runner_opt.config_json.empty()) {
@@ -1475,7 +1645,8 @@ class app_context {
                              size_t iteration,
                              size_t total_frames,
                              double& total_inference_time) {
-    size_t frame_count = 0;  // Initialize frame count
+    size_t frame_count = 0;         // Initialize input-side frame count
+    size_t output_frame_count = 0;  // Initialize output-side frame count (tracked separately, per direction)
     size_t num_full_batches = 0;
     size_t num_partial_batches = 0;
     APP_LOG(AppLogLevel::DEBUG, options.app_log, "Total frames to process: %zu", total_frames);
@@ -1490,17 +1661,22 @@ class app_context {
 
     while (frame_count < total_frames) {
       /* Calculate actual batch size for this iteration (handles partial batches at end) */
-      size_t actual_batch_size = std::min(m_batch_size, total_frames - frame_count);
-      bool is_partial_batch = (actual_batch_size < m_batch_size);
+      size_t actual_input_batch_size = std::min(m_input_batch_size, total_frames - frame_count);
+      bool is_partial_input_batch = (actual_input_batch_size < m_input_batch_size);
 
-      if (is_partial_batch) {
+      /* Input and output batch sizes are queried and used independently - every
+       * call writes the model's full declared output batch, regardless of the input side's
+       * batch size or whether this was a partial input batch. */
+      size_t actual_output_batch_size = m_output_batch_size;
+
+      if (is_partial_input_batch) {
         APP_LOG(AppLogLevel::INFO, options.app_log, "Processing partial batch: %zu frames (frame %zu-%zu of %zu)",
-                actual_batch_size, frame_count, frame_count + actual_batch_size - 1, total_frames);
+                actual_input_batch_size, frame_count, frame_count + actual_input_batch_size - 1, total_frames);
       }
 
       if (!m_app_opt.dry_run) {
         /* Populate input tensors for the current run */
-        if (vart_app_status::FAILURE == populate_input_tensors(frame_count, actual_batch_size)) {
+        if (vart_app_status::FAILURE == populate_input_tensors(frame_count, actual_input_batch_size)) {
           APP_LOG(AppLogLevel::ERROR, options.app_log, "Failed to populate input tensors at frame %zu", frame_count);
           return 1;
         }
@@ -1523,7 +1699,7 @@ class app_context {
       }
 
       /* Track batch statistics */
-      if (is_partial_batch) {
+      if (is_partial_input_batch) {
         num_partial_batches++;
       } else {
         num_full_batches++;
@@ -1533,16 +1709,19 @@ class app_context {
         /* Log batch completion before incrementing frame_count */
         APP_LOG(AppLogLevel::DEBUG, options.app_log,
                 "Completed batch: frames %zu-%zu (%zu frames), total processed: %zu/%zu", frame_count,
-                frame_count + actual_batch_size - 1, actual_batch_size, frame_count + actual_batch_size, total_frames);
+                frame_count + actual_input_batch_size - 1, actual_input_batch_size,
+                frame_count + actual_input_batch_size, total_frames);
 
-        frame_count += actual_batch_size;  // Increment frame count by actual batch size
+        frame_count += actual_input_batch_size;    // Increment input frame count by actual input batch size
+        output_frame_count += actual_output_batch_size;  // Kept in sync even though writing is skipped here
         /* Skip saving output tensors in dry run or benchmark mode */
         continue;
       }
 
       /* Write output tensors to files */
-      if (vart_app_status::FAILURE == write_output_tensors(frame_count, actual_batch_size)) {
-        APP_LOG(AppLogLevel::ERROR, options.app_log, "Failed to write output tensors for frame %zu", frame_count);
+      if (vart_app_status::FAILURE == write_output_tensors(output_frame_count, actual_output_batch_size)) {
+        APP_LOG(AppLogLevel::ERROR, options.app_log, "Failed to write output tensors for frame %zu",
+                output_frame_count);
         close_output_files();  // Clean up on error
         return 1;
       }
@@ -1550,15 +1729,17 @@ class app_context {
       /* Log batch completion before incrementing frame_count */
       APP_LOG(AppLogLevel::DEBUG, options.app_log,
               "Completed batch: frames %zu-%zu (%zu frames), total processed: %zu/%zu", frame_count,
-              frame_count + actual_batch_size - 1, actual_batch_size, frame_count + actual_batch_size, total_frames);
+              frame_count + actual_input_batch_size - 1, actual_input_batch_size,
+              frame_count + actual_input_batch_size, total_frames);
 
-      frame_count += actual_batch_size;  // Increment frame count by actual batch size
+      frame_count += actual_input_batch_size;    // Increment input frame count by actual input batch size
+      output_frame_count += actual_output_batch_size;  // Increment output frame count by actual output batch size
     }
 
     /* Log batch processing summary */
     size_t total_batches = num_full_batches + num_partial_batches;
     if (num_partial_batches > 0) {
-      size_t partial_batch_frames = total_frames % m_batch_size;
+      size_t partial_batch_frames = total_frames % m_input_batch_size;
       APP_LOG(AppLogLevel::RESULT, options.app_log,
               "Batch processing summary: %zu total frames, %zu batches (%zu full, %zu partial with %zu frames)",
               total_frames, total_batches, num_full_batches, num_partial_batches, partial_batch_frames);
@@ -1583,10 +1764,15 @@ class app_context {
    */
   void log_average_inference_time(size_t total_frames, double total_inference_time, size_t total_runs) {
     double avg_time_us = total_inference_time / (total_frames * total_runs);
-    double avg_time_ms = avg_time_us / 1000;
-    std::ostringstream time_str;
-    time_str << std::fixed << std::setprecision(2) << avg_time_ms;
-    std::cout << "Average inference time over " << total_runs << " runs: " << time_str.str() << " ms" << std::endl;
+    /* avg_time_us is the amortized per-frame latency. A single inference call runs the model
+     * in parallel across dp_size (= m_input_batch_size) HW instances, so the average per-inference-call
+     * latency is avg_time_us * m_input_batch_size (reported as "ms/inference (dp_size=N)"). */
+    double avg_time_ms_per_batch = (avg_time_us * static_cast<double>(m_input_batch_size)) / 1000.0;
+    /* Throughput is frames processed per second. avg_time_us is already per-frame, so this is
+     * simply 1e6 / avg_time_us and is independent of the batch size. */
+    double throughput_fps = (avg_time_us > 0.0) ? (1.0e6 / avg_time_us) : 0.0;
+    print_perf_table({{"Average Inference Time", fmt_ms_per_inference(avg_time_ms_per_batch, m_input_batch_size)},
+                      {"Average Throughput", fmt_fps(throughput_fps)}});
   }
 };
 
@@ -1606,8 +1792,12 @@ class app_context {
  *       "config-file": "<optional-vitis-ai-config-json>",
  *       "aie-columns-sharing": true|false,
  *       "start-column": <optional-uint>,
- *       "cma-index": <optional-int>,
- *       "ai-analyzer-profiling": true|false
+ *       "cma-index": <optional-uint>,
+ *       "ai-analyzer-profiling": true|false,
+ *       "input-tensor-type": "CPU|HW",
+ *       "output-tensor-type": "CPU|HW",
+ *       "input-tensor-type.<tensor-name>": "CPU|HW",
+ *       "output-tensor-type.<tensor-name>": "CPU|HW"
  *     }
  *   },
  *   "ifms-config": [
@@ -1637,10 +1827,15 @@ void parse_config_file(const std::string& config_file, app_opt& app_info, runner
         runner_info.start_column = sc.get();
         runner_info.is_start_column_set = true;
       }
-      if (auto ci = runner_options.get_optional<int32_t>("cma-index")) {
+      if (auto ci = runner_options.get_optional<uint32_t>("cma-index")) {
         runner_info.cma_index = ci.get();
         runner_info.is_cma_index_set = true;
       }
+
+      if (auto r_name = runner_options.get_optional<std::string>("name")) {
+        runner_info.name = r_name.get();
+      }
+
       runner_info.ai_analyzer_profiling =
           runner_options.get<bool>("ai-analyzer-profiling", runner_info.ai_analyzer_profiling);
       runner_info.input_tensor_type =
@@ -1649,17 +1844,52 @@ void parse_config_file(const std::string& config_file, app_opt& app_info, runner
           runner_options.get<std::string>("output-tensor-type", runner_info.output_tensor_type);
 
       if (runner_info.input_tensor_type != "CPU" && runner_info.input_tensor_type != "HW") {
-        APP_LOG(AppLogLevel::WARNING, app_info.app_log,
-                "Invalid input-tensor-type '%s'. Supported values are CPU and HW. Falling back to HW.",
+        APP_LOG(AppLogLevel::ERROR, app_info.app_log,
+                "Invalid input-tensor-type '%s'. Supported values are CPU and HW.",
                 runner_info.input_tensor_type.c_str());
-        runner_info.input_tensor_type = "HW";
+        throw std::runtime_error("Invalid input-tensor-type: '" + runner_info.input_tensor_type + "'");
       }
 
       if (runner_info.output_tensor_type != "CPU" && runner_info.output_tensor_type != "HW") {
-        APP_LOG(AppLogLevel::WARNING, app_info.app_log,
-                "Invalid output-tensor-type '%s'. Supported values are CPU and HW. Falling back to HW.",
+        APP_LOG(AppLogLevel::ERROR, app_info.app_log,
+                "Invalid output-tensor-type '%s'. Supported values are CPU and HW.",
                 runner_info.output_tensor_type.c_str());
-        runner_info.output_tensor_type = "HW";
+        throw std::runtime_error("Invalid output-tensor-type: '" + runner_info.output_tensor_type + "'");
+      }
+
+      /* Parse per-tensor type overrides: input-tensor-type.<name> and output-tensor-type.<name> */
+      for (const auto& item : runner_options) {
+        const std::string& key = item.first;
+        const char* prefix = nullptr;
+        const char* direction = nullptr;
+        std::unordered_map<std::string, std::string>* target_map = nullptr;
+
+        if (key.find("input-tensor-type.") == 0) {
+          prefix = "input-tensor-type.";
+          direction = "input";
+          target_map = &runner_info.in_tensor_type_map;
+        } else if (key.find("output-tensor-type.") == 0) {
+          prefix = "output-tensor-type.";
+          direction = "output";
+          target_map = &runner_info.out_tensor_type_map;
+        } else {
+          continue;
+        }
+
+        const std::string tensor_name = key.substr(std::strlen(prefix));
+        if (tensor_name.empty()) {
+          throw std::runtime_error(std::string("Invalid key '") + prefix + "': tensor name must not be empty");
+        }
+        const std::string tensor_type = item.second.get_value<std::string>();
+        APP_LOG(AppLogLevel::INFO, app_info.app_log, "Parsed %s-tensor-type for tensor '%s': '%s'",
+                direction, tensor_name.c_str(), tensor_type.c_str());
+        if (tensor_type != "CPU" && tensor_type != "HW") {
+          APP_LOG(AppLogLevel::ERROR, app_info.app_log,
+                  "Invalid %s-tensor-type for tensor '%s': '%s'. Supported values are CPU and HW.",
+                  direction, tensor_name.c_str(), tensor_type.c_str());
+          throw std::runtime_error(std::string("Invalid ") + direction + "-tensor-type for tensor '" + tensor_name + "': '" + tensor_type + "'");
+        }
+        (*target_map)[tensor_name] = tensor_type;
       }
     }
 
@@ -1908,9 +2138,7 @@ int main(int argc, char* argv[]) {
     if (result != 0) {
       return result;
     }
-    /* `--app-config` is mandatory for normal/dry-run/benchmark inference flows
-     * but is OPTIONAL when `--get-model-info <model-path>` is supplied: the
-     * operator can inspect a model without authoring an app-config JSON. */
+
     /* `--app-config` is mandatory for normal/dry-run/benchmark inference flows
      * and is IGNORED when `--get-model-info <model-path>` is supplied: the
      * operator can inspect a model without authoring an app-config JSON. If
@@ -2023,8 +2251,9 @@ int main(int argc, char* argv[]) {
       return -1;
     }
 
-    /* Run the inference for n number of runs default is 1 */
-    APP_LOG(AppLogLevel::DEBUG, options.app_log, "Running the inference for %u runs", options.n_runs);
+    /* Run the inference for n number of runs default is 1. Written to stdout regardless of
+     * --log-level so the operator sees the run count even with default logging. */
+    std::cout << "Running the inference for " << options.n_runs << " runs" << std::endl;
     const size_t total_runs = static_cast<size_t>(options.n_runs);
 
     for (size_t r = 0; r < total_runs; ++r) {

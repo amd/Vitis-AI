@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <thread>
 #include "common/app_utils.hpp"
@@ -644,7 +645,7 @@ static bool create_preprocess_context(AppContext* ctx) {
 
         APP_LOG(AppLogLevel::INFO, log_level,
                 "Model instance %zu uses GENERIC memory_layout; inferred preprocess layout=%s with output=%ux%u", i,
-                to_string(effective_layout), inferred_width, inferred_height);
+                vart::to_string(effective_layout).data(), inferred_width, inferred_height);
       }
 
       if (!config.colour_format_str.empty()) {
@@ -663,38 +664,46 @@ static bool create_preprocess_context(AppContext* ctx) {
           return false;
         }
         vart::VideoFormat expected_colour_format =
-            derive_vart_video_format(colour_space, effective_layout, first_tensor.data_type);
+            derive_vart_video_format(colour_space, effective_layout, first_tensor.data_type, first_tensor.shape);
+        if (expected_colour_format == vart::VideoFormat::UNKNOWN) {
+          APP_LOG(AppLogLevel::ERROR, log_level,
+                  "Cannot validate colour-format for instance %zu: user specified \"%s\", but "
+                  "tensor metadata combination is unsupported for automatic derivation "
+                  "(layout=%s, dtype=%s)",
+                  i, config.colour_format_str.c_str(), vart::to_string(effective_layout).data(), vart::to_string(first_tensor.data_type).data());
+          return false;
+        }
         if (expected_colour_format != config.preprocess_info.colour_format) {
           APP_LOG(AppLogLevel::ERROR, log_level,
                   "colour-format mismatch for instance %zu: user specified \"%s\" but "
                   "tensor metadata (layout=%s, dtype=%s) expects %s",
-                  i, config.colour_format_str.c_str(), to_string(effective_layout), to_string(first_tensor.data_type),
+                  i, config.colour_format_str.c_str(), vart::to_string(effective_layout).data(), vart::to_string(first_tensor.data_type).data(),
                   to_string(expected_colour_format));
           return false;
         }
         APP_LOG(AppLogLevel::INFO, log_level,
                 "\t - Validated colour-format \"%s\" for instance %zu "
                 "(colour_space=%s, layout=%s, dtype=%s)",
-                config.colour_format_str.c_str(), i, colour_space.c_str(), to_string(effective_layout),
-                to_string(first_tensor.data_type));
+                config.colour_format_str.c_str(), i, colour_space.c_str(), vart::to_string(effective_layout).data(),
+                vart::to_string(first_tensor.data_type).data());
       } else {
         const string default_colour_space = "RGB";
         APP_LOG(AppLogLevel::INFO, log_level,
                 "colour-format not specified for instance %zu; auto-detecting VideoFormat "
                 "using default colour_space=%s with tensor layout=%s, dtype=%s",
-                i, default_colour_space.c_str(), to_string(effective_layout), to_string(first_tensor.data_type));
-        config.preprocess_info.colour_format =
-            derive_vart_video_format(default_colour_space, effective_layout, first_tensor.data_type);
+                i, default_colour_space.c_str(), vart::to_string(effective_layout).data(), vart::to_string(first_tensor.data_type).data());
+        config.preprocess_info.colour_format = derive_vart_video_format(default_colour_space, effective_layout,
+                                                                        first_tensor.data_type, first_tensor.shape);
         if (config.preprocess_info.colour_format == vart::VideoFormat::UNKNOWN) {
           APP_LOG(AppLogLevel::ERROR, log_level,
                   "Cannot derive VideoFormat for instance %zu: colour_space=%s, layout=%s, dtype=%s", i,
-                  default_colour_space.c_str(), to_string(effective_layout), to_string(first_tensor.data_type));
+                  default_colour_space.c_str(), vart::to_string(effective_layout).data(), vart::to_string(first_tensor.data_type).data());
           return false;
         }
         APP_LOG(AppLogLevel::INFO, log_level,
                 "\t - Derived VideoFormat %s for instance %zu from colour_space=%s, layout=%s, dtype=%s",
                 to_string(config.preprocess_info.colour_format), i, default_colour_space.c_str(),
-                to_string(effective_layout), to_string(first_tensor.data_type));
+                vart::to_string(effective_layout).data(), vart::to_string(first_tensor.data_type).data());
       }
 
       /* Obtain the quantization factor from first tensor info*/
@@ -806,34 +815,90 @@ static bool create_infer_context(AppContext* ctx) {
       auto log_level_str = config.get<std::string>("inference-config.runner-options.log-level", "ERROR");
       auto ai_analyzer_profile_opt = config.get_optional<bool>("inference-config.runner-options.ai-analyzer-profiling");
       auto aie_columns_sharing_opt = config.get_optional<bool>("inference-config.runner-options.aie-columns-sharing");
+      auto enable_xrt_run_pool_opt = config.get_optional<bool>("inference-config.runner-options.enable-xrt-run-pool");
       auto start_column_opt = config.get_optional<uint32_t>("inference-config.runner-options.start-column");
       auto input_tensor_type_str = config.get<std::string>("inference-config.runner-options.input-tensor-type", "HW");
       auto output_tensor_type_str = config.get<std::string>("inference-config.runner-options.output-tensor-type", "HW");
+      auto name = config.get<std::string>("inference-config.runner-options.name", "VAIML-Runner");
 
       if (input_tensor_type_str != "CPU" && input_tensor_type_str != "HW") {
-        APP_LOG(AppLogLevel::WARNING, log_level,
-                "Invalid input-tensor-type '%s'. Supported values are CPU and HW. Falling back to HW.",
+        APP_LOG(AppLogLevel::ERROR, log_level, "Invalid input-tensor-type '%s'. Supported values are CPU and HW.",
                 input_tensor_type_str.c_str());
-        input_tensor_type_str = "HW";
+        throw std::runtime_error("Invalid input-tensor-type: '" + input_tensor_type_str + "'");
       }
 
       if (output_tensor_type_str != "CPU" && output_tensor_type_str != "HW") {
-        APP_LOG(AppLogLevel::WARNING, log_level,
-                "Invalid output-tensor-type '%s'. Supported values are CPU and HW. Falling back to HW.",
+        APP_LOG(AppLogLevel::ERROR, log_level, "Invalid output-tensor-type '%s'. Supported values are CPU and HW.",
                 output_tensor_type_str.c_str());
-        output_tensor_type_str = "HW";
+        throw std::runtime_error("Invalid output-tensor-type: '" + output_tensor_type_str + "'");
+      }
+
+      /* Parse per-tensor type overrides: input-tensor-type.<name> and output-tensor-type.<name> */
+      std::unordered_map<std::string, std::string> in_tensor_type_map;
+      std::unordered_map<std::string, std::string> out_tensor_type_map;
+      if (auto runner_opts_child = config.get_child_optional("inference-config.runner-options")) {
+        for (const auto& item : runner_opts_child.get()) {
+          const std::string& key = item.first;
+          const char* prefix = nullptr;
+          const char* direction = nullptr;
+          std::unordered_map<std::string, std::string>* target_map = nullptr;
+
+          if (key.find("input-tensor-type.") == 0) {
+            prefix = "input-tensor-type.";
+            direction = "input";
+            target_map = &in_tensor_type_map;
+          } else if (key.find("output-tensor-type.") == 0) {
+            prefix = "output-tensor-type.";
+            direction = "output";
+            target_map = &out_tensor_type_map;
+          } else {
+            continue;
+          }
+
+          const std::string tensor_name = key.substr(std::strlen(prefix));
+          if (tensor_name.empty()) {
+            throw std::runtime_error(std::string("Invalid key '") + prefix + "': tensor name must not be empty");
+          }
+          const std::string tensor_type = item.second.get_value<std::string>();
+          APP_LOG(AppLogLevel::DEBUG, log_level, "\tParsed %s-tensor-type for tensor '%s': '%s'", direction,
+                  tensor_name.c_str(), tensor_type.c_str());
+          if (tensor_type != "CPU" && tensor_type != "HW") {
+            APP_LOG(AppLogLevel::ERROR, log_level,
+                    "Invalid %s-tensor-type for tensor '%s': '%s'. Supported values are CPU and HW.", direction,
+                    tensor_name.c_str(), tensor_type.c_str());
+            throw std::runtime_error(std::string("Invalid ") + direction + "-tensor-type for tensor '" + tensor_name +
+                                     "': '" + tensor_type + "'");
+          }
+          (*target_map)[tensor_name] = tensor_type;
+        }
       }
 
       runner_options["input_tensor_type"] = input_tensor_type_str;
       runner_options["output_tensor_type"] = output_tensor_type_str;
       runner_options["log_level"] = log_level_str;
+      runner_options["name"] = name;
+
+      for (const auto& entry : in_tensor_type_map) {
+        runner_options["input_tensor_type." + entry.first] = entry.second;
+      }
+      for (const auto& entry : out_tensor_type_map) {
+        runner_options["output_tensor_type." + entry.first] = entry.second;
+      }
 
       APP_LOG(AppLogLevel::DEBUG, log_level, "\tRunner options:");
       APP_LOG(AppLogLevel::DEBUG, log_level, "\tconfig-file:           %s", config_file.c_str());
       APP_LOG(AppLogLevel::DEBUG, log_level, "\tlog-level:             %s", log_level_str.c_str());
       APP_LOG(AppLogLevel::DEBUG, log_level, "\tinput-tensor-type:     %s", input_tensor_type_str.c_str());
       APP_LOG(AppLogLevel::DEBUG, log_level, "\toutput-tensor-type:    %s", output_tensor_type_str.c_str());
-
+      for (const auto& entry : in_tensor_type_map) {
+        APP_LOG(AppLogLevel::DEBUG, log_level, "\tinput-tensor-type.%s: %s", entry.first.c_str(),
+                entry.second.c_str());
+      }
+      for (const auto& entry : out_tensor_type_map) {
+        APP_LOG(AppLogLevel::DEBUG, log_level, "\toutput-tensor-type.%s: %s", entry.first.c_str(),
+                entry.second.c_str());
+      }
+      APP_LOG(AppLogLevel::DEBUG, log_level, "\tname:                  %s", name.c_str());
       if (ai_analyzer_profile_opt) {
         runner_options["ai_analyzer_profiling"] = ai_analyzer_profile_opt.get();
         APP_LOG(AppLogLevel::DEBUG, log_level, "\tai-analyzer-profiling: %d", ai_analyzer_profile_opt.get());
@@ -845,6 +910,10 @@ static bool create_infer_context(AppContext* ctx) {
       if (start_column_opt) {
         runner_options["start_column"] = start_column_opt.get();
         APP_LOG(AppLogLevel::DEBUG, log_level, "\tstart-column:          %d", start_column_opt.get());
+      }
+      if (enable_xrt_run_pool_opt) {
+        runner_options["enable_xrt_run_pool"] = enable_xrt_run_pool_opt.get();
+        APP_LOG(AppLogLevel::DEBUG, log_level, "\tenable-xrt-run-pool:   %d", enable_xrt_run_pool_opt.get());
       }
 
       // Create per-instance configuration
@@ -864,6 +933,8 @@ static bool create_infer_context(AppContext* ctx) {
           (input_tensor_type_str == "CPU") ? vart::TensorType::CPU : vart::TensorType::HW;
       inference_config.output_tensor_type =
           (output_tensor_type_str == "CPU") ? vart::TensorType::CPU : vart::TensorType::HW;
+      inference_config.in_tensor_type_map = std::move(in_tensor_type_map);
+      inference_config.out_tensor_type_map = std::move(out_tensor_type_map);
       inference_config.instance_id = i;
       inference_config.critical_error_ptr = &ctx->critical_error;  // Set error signaling pointer
       inference_config.num_model_instances = ctx->num_model_instances;
@@ -939,7 +1010,9 @@ static bool create_postprocess_context(AppContext* ctx) {
       // Use model info from corresponding inference instance
       const InferenceConfig& instance_model_info = get_model_info_for_instance(ctx, i);
 
-      config.model_batch_size = instance_model_info.batch_size;
+      // PostProcess operates on the model's OUTPUT tensors, so its batch size comes from the
+      // output-side batch size, not the input-side one.
+      config.model_batch_size = instance_model_info.output_batch_size;
       config.model_input_width = instance_model_info.model_width;
       config.model_input_height = instance_model_info.model_height;
       config.model_num_input_tensors = instance_model_info.num_in_tensors;
@@ -1148,15 +1221,157 @@ bool create_all_context(AppContext* ctx) {
             ctx->preprocess.size(), ctx->inference.size());
 
     APP_LOG(AppLogLevel::DEBUG, log_level, " - start_all_contexts()::");
-    start_all_contexts(ctx);
+    if (!start_all_contexts(ctx)) {
+      APP_LOG(AppLogLevel::ERROR, log_level, "Failed to start pipeline threads");
+      flush_pipeline(ctx);
+      destroy_all_context(ctx);
+      return false;
+    }
 
     APP_LOG(AppLogLevel::INFO, log_level, "create_all_context() completed successfully");
 
     return true;
   } catch (const exception& e) {
     APP_LOG(AppLogLevel::ERROR, log_level, "Exception caught: %s", e.what());
+    flush_pipeline(ctx);
     destroy_all_context(ctx);
     return false;
+  }
+}
+
+/** @return true when no pool-backed work remains queued between pipeline stages. */
+static bool pipeline_queues_empty(const AppContext* ctx) {
+  for (const auto& queue : ctx->preproc_inqs_vec) {
+    if (queue && !queue->empty()) {
+      return false;
+    }
+  }
+  for (const auto& queue : ctx->preproc_outqs_vec) {
+    if (queue && !queue->empty()) {
+      return false;
+    }
+  }
+  for (const auto& queue : ctx->inf_inqs_vec) {
+    if (queue && !queue->empty()) {
+      return false;
+    }
+  }
+  for (const auto& queue : ctx->inf_outqs_vec) {
+    if (queue && !queue->empty()) {
+      return false;
+    }
+  }
+  for (const auto& queue : ctx->orig_frame_qs_vec) {
+    if (queue && !queue->empty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * @brief Drop queued pipeline work so pool-backed buffers are released.
+ *
+ * Pops and destroys pending objects in all pipeline AppQueues that may hold
+ * pool-backed buffers. Must run while the owning component instances (and their
+ * pools) are still alive.
+ */
+static void discard_pending_pipeline_frames(AppContext* ctx) {
+  AppLogLevel log_level = ctx->log_level;
+  int total_input_discarded = 0;
+  int total_preproc_discarded = 0;
+  int total_results_discarded = 0;
+
+  for (size_t i = 0; i < ctx->preproc_inqs_vec.size(); i++) {
+    if (!ctx->preproc_inqs_vec[i]) {
+      continue;
+    }
+    InputFrame pending;
+    int discarded = 0;
+    while (ctx->preproc_inqs_vec[i]->try_pop(pending)) {
+      discarded++;
+    }
+    if (discarded > 0) {
+      total_input_discarded += discarded;
+      APP_LOG(AppLogLevel::DEBUG, log_level, "Discarded %d pending input frame batch(es) from preproc_inq[%zu]",
+              discarded, i);
+    }
+  }
+
+  for (size_t i = 0; i < ctx->orig_frame_qs_vec.size(); i++) {
+    if (!ctx->orig_frame_qs_vec[i]) {
+      continue;
+    }
+    InputFrame pending;
+    int discarded = 0;
+    while (ctx->orig_frame_qs_vec[i]->try_pop(pending)) {
+      discarded++;
+    }
+    if (discarded > 0) {
+      total_input_discarded += discarded;
+      APP_LOG(AppLogLevel::DEBUG, log_level, "Discarded %d pending original frame batch(es) from orig_frame_q[%zu]",
+              discarded, i);
+    }
+  }
+
+  for (size_t i = 0; i < ctx->preproc_outqs_vec.size(); i++) {
+    if (!ctx->preproc_outqs_vec[i]) {
+      continue;
+    }
+    PreprocessedFrame pending;
+    int discarded = 0;
+    while (ctx->preproc_outqs_vec[i]->try_pop(pending)) {
+      discarded++;
+    }
+    if (discarded > 0) {
+      total_preproc_discarded += discarded;
+      APP_LOG(AppLogLevel::DEBUG, log_level, "Discarded %d pending preprocessed batch(es) from preproc_outq[%zu]",
+              discarded, i);
+    }
+  }
+
+  for (size_t i = 0; i < ctx->inf_inqs_vec.size(); i++) {
+    if (!ctx->inf_inqs_vec[i]) {
+      continue;
+    }
+    PreprocessedFrame pending;
+    int discarded = 0;
+    while (ctx->inf_inqs_vec[i]->try_pop(pending)) {
+      discarded++;
+    }
+    if (discarded > 0) {
+      total_preproc_discarded += discarded;
+      APP_LOG(AppLogLevel::DEBUG, log_level, "Discarded %d pending inference input batch(es) from inf_inq[%zu]",
+              discarded, i);
+    }
+  }
+
+  for (size_t i = 0; i < ctx->inf_outqs_vec.size(); i++) {
+    if (!ctx->inf_outqs_vec[i]) {
+      continue;
+    }
+    InferenceResult pending;
+    int discarded = 0;
+    while (ctx->inf_outqs_vec[i]->try_pop(pending)) {
+      discarded++;
+    }
+    if (discarded > 0) {
+      total_results_discarded += discarded;
+      APP_LOG(AppLogLevel::DEBUG, log_level, "Discarded %d pending inference result(s) from queue[%zu]", discarded, i);
+    }
+  }
+
+  if (total_input_discarded > 0) {
+    APP_LOG(AppLogLevel::DEBUG, log_level, "Released %d queued input frame batch(es) during forced shutdown",
+            total_input_discarded);
+  }
+  if (total_preproc_discarded > 0) {
+    APP_LOG(AppLogLevel::DEBUG, log_level, "Released %d queued preprocessed batch(es) during forced shutdown",
+            total_preproc_discarded);
+  }
+  if (total_results_discarded > 0) {
+    APP_LOG(AppLogLevel::DEBUG, log_level, "Released %d queued inference result(s) during forced shutdown",
+            total_results_discarded);
   }
 }
 
@@ -1260,8 +1475,8 @@ static bool drain_pipeline(AppContext* ctx) {
               post_processing);
     }
 
-    // Pipeline is drained when nothing is processing
-    if (!any_processing) {
+    // Pipeline is drained when nothing is processing and no pool-backed work is queued.
+    if (!any_processing && pipeline_queues_empty(ctx)) {
       auto drain_time =
           std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count();
       APP_LOG(AppLogLevel::INFO, log_level, "Pipeline drained in %ld ms (%d items tracked)", drain_time,
@@ -1273,7 +1488,20 @@ static bool drain_pipeline(AppContext* ctx) {
   }
 }
 
-/* Flush the pipeline by stopping all components and draining remaining frames */
+/* Flush the pipeline by stopping all components and draining remaining frames.
+ *
+ * Graceful shutdown order:
+ *   1. Stop file_readers (producers)
+ *   2. Stop preprocess
+ *   3. Finish inference input queues
+ *   4. drain_pipeline() — wait for in-flight frames to complete
+ *   5. Stop inference (consumers release in-flight pool-backed frames)
+ *   6. [forced only] discard_pending_pipeline_frames() on all pipeline AppQueues
+ *   7. Finish inference output queues and original-frame queues
+ *   8. Stop postprocess
+ *
+ * Step 6 runs only when step 4 times out (benchmark idle timeout or forced exit).
+ */
 void flush_pipeline(AppContext* ctx) {
   AppLogLevel log_level = ctx->log_level;
 
@@ -1323,7 +1551,7 @@ void flush_pipeline(AppContext* ctx) {
     APP_LOG(AppLogLevel::WARNING, log_level, "Pipeline drain incomplete - proceeding with forced shutdown");
   }
 
-  // STEP 5: Stop consumers (now safe - work complete or timeout)
+  // STEP 5: Stop consumers first so in-flight pool-backed buffers are released.
   if (!ctx->inference.empty()) {
     APP_LOG(AppLogLevel::INFO, log_level, "Stopping %zu inference instance(s)...", ctx->inference.size());
     for (size_t i = 0; i < ctx->inference.size(); i++) {
@@ -1334,6 +1562,10 @@ void flush_pipeline(AppContext* ctx) {
       }
     }
     APP_LOG(AppLogLevel::INFO, log_level, "Inference instances stopped");
+  }
+
+  if (!drain_success) {
+    discard_pending_pipeline_frames(ctx);
   }
 
   // STEP 6: Finish remaining queues and stop postprocess
@@ -1367,40 +1599,53 @@ void flush_pipeline(AppContext* ctx) {
     APP_LOG(AppLogLevel::INFO, log_level, "Postprocess instances stopped");
   }
 
-  APP_LOG(AppLogLevel::INFO, log_level, "Pipeline stopped and drained successfully");
+  if (drain_success) {
+    APP_LOG(AppLogLevel::INFO, log_level, "Pipeline stopped and drained successfully");
+  } else {
+    APP_LOG(AppLogLevel::INFO, log_level, "Pipeline stopped after forced shutdown (drain incomplete)");
+  }
 }
 
-/* Clean up all resources after pipeline is stopped */
+/* Clean up all resources after pipeline is stopped.
+ *
+ * Called after flush_pipeline() on the normal exit path, and directly on
+ * initialization failures where flush_pipeline() was not run.
+ *
+ * Required teardown order:
+ *   1. discard_pending_pipeline_frames() — return queued buffers while pools alive
+ *   2. inference      — destroy output MemoryBufferPools
+ *   3. postprocess
+ *   4. preprocess
+ *   5. clear all queue vectors (incl. preproc_inqs / orig_frame_qs VideoFrame holders)
+ *   6. file_readers   — destroy VideoFramePool / tensor pools last
+ */
 void destroy_all_context(AppContext* ctx) {
   AppLogLevel log_level = ctx->log_level;
 
   APP_LOG(AppLogLevel::INFO, log_level, "Cleaning up pipeline resources...");
 
-  // Clear file readers
-  if (!ctx->file_readers.empty()) {
-    ctx->file_readers.clear();
-    APP_LOG(AppLogLevel::DEBUG, log_level, "File readers destroyed");
-  }
+  // Drop queued work before destroying component pools (inf_outqs -> output_pool_, etc.).
+  discard_pending_pipeline_frames(ctx);
 
-  // Clear preprocessing instances
-  if (!ctx->preprocess.empty()) {
-    ctx->preprocess.clear();
-    APP_LOG(AppLogLevel::DEBUG, log_level, "Preprocessing instances destroyed");
-  }
-
-  // Clear inference instances
   if (!ctx->inference.empty()) {
     ctx->inference.clear();
     APP_LOG(AppLogLevel::DEBUG, log_level, "Inference instances destroyed");
   }
 
-  // Clear postprocessing instances
   if (!ctx->postprocess.empty()) {
     ctx->postprocess.clear();
     APP_LOG(AppLogLevel::DEBUG, log_level, "Postprocess instances destroyed");
   }
 
-  // Clear all queue vectors
+  if (!ctx->preprocess.empty()) {
+    ctx->preprocess.clear();
+    APP_LOG(AppLogLevel::DEBUG, log_level, "Preprocessing instances destroyed");
+  }
+  
+  for (auto& reader : ctx->file_readers) {
+    if (reader) reader->stop();   // finish on LIVE queues, null pointers
+  }
+  // Release VideoFrame holders in preproc_inqs / orig_frame_qs before file_readers.
   ctx->preproc_inqs_vec.clear();
   ctx->preproc_outqs_vec.clear();
   ctx->inf_inqs_vec.clear();
@@ -1408,6 +1653,11 @@ void destroy_all_context(AppContext* ctx) {
   ctx->orig_frame_qs_vec.clear();
   ctx->postproc_outqs_vec.clear();
   APP_LOG(AppLogLevel::DEBUG, log_level, "Queue vectors cleared");
+
+  if (!ctx->file_readers.empty()) {
+    ctx->file_readers.clear();
+    APP_LOG(AppLogLevel::DEBUG, log_level, "File readers destroyed");
+  }
 
   // Clear model information
   ctx->model_info.clear();

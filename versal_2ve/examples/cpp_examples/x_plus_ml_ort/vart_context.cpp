@@ -128,9 +128,6 @@ void init_pipeline_context(PipelineContext* pipeline_ctx, int pipeline_id) {
   pipeline_ctx->input_height = 0;
   pipeline_ctx->input_width = 0;
 
-  /* By default set panscan cropping to false */
-  pipeline_ctx->do_pan_scan = false;
-
 #ifdef DUMP_INPUTS
   /* Initialize debug paths */
   pipeline_ctx->dump_input_path.clear();
@@ -142,7 +139,7 @@ void init_pipeline_context(PipelineContext* pipeline_ctx, int pipeline_id) {
   /* Initialize pre-process context */
   pipeline_ctx->preprocess_enable = false;
   pipeline_ctx->pre_process = nullptr;
-  memset(&pipeline_ctx->preprocess_info, 0, sizeof(pipeline_ctx->preprocess_info));
+  pipeline_ctx->preprocess_info = {};
   pipeline_ctx->ppe_mbank_in = 0;
   pipeline_ctx->ppe_mbank_out = 0;
   pipeline_ctx->quant_scale_factor = 1.0f;
@@ -344,10 +341,7 @@ bool create_all_context(PipelineContext* pipeline_ctx,
       buf_size = 0;
       vart::VideoInfo out_vinfo;
       out_vinfo = pipeline_ctx->pre_process->get_output_vinfo();
-      /* Inference support only BGR/RGB as input
-       * TODO infer provide size as per model requirement but actually it works
-       * on RGBA/BGRA, for zero copy, how we will get the RGBA/BGRA size along
-       * with padding required by infer HW */
+      /* Inference support only BGR/RGB as input */
       buf_size = get_video_frame_size(out_vinfo.fmt, pipeline_ctx->model_info.model_width,
                                       pipeline_ctx->model_info.model_height);
 

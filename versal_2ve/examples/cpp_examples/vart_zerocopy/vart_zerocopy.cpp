@@ -154,11 +154,6 @@ constexpr bool kPanScanResizing = true;    // resizing-type "PANSCAN" (else "LET
 constexpr bool kSymmetricPadding = false;  // used when resizing is LETTERBOX
 }  // namespace resnet50_preprocess_info
 
-// True when we should center-crop the input ROI to output aspect ratio before resize (see adjust_input_roi_pan_scan).
-constexpr bool resnet50_preprocess_do_pan_scan() {
-  return resnet50_preprocess_info::kMaintainAspectRatio && resnet50_preprocess_info::kPanScanResizing;
-}
-
 // Fills vart::PreProcessInfo from resnet50_preprocess_info::* defaults (model IFM height/width + runtime
 // IFM dtype). `mode` selects which colour_format / qt_fctr policy applies:
 //   Zerocopy mode: ifm_dtype is the HW IFM dtype. qt_fctr = 1.0 / runner quant scale (integer IFMs);
@@ -227,13 +222,11 @@ vart::PreProcessInfo make_resnet50_preprocess_info(uint32_t out_height,
             ". Run 'ml_vart --get-model-info <model>' to inspect the CPU view of the input tensor.");
     }
   }
-  // PANSCAN + maintain aspect → PreProcessType::DEFAULT and center-crop in_roi before resize;
-  // LETTERBOX → PreProcessType::LETTERBOX + optional symmetric-padding.
   if (!resnet50_preprocess_info::kMaintainAspectRatio) {
     info.preprocess_type = vart::PreProcessType::DEFAULT;
     info.symmetric_padding = false;
   } else if (resnet50_preprocess_info::kPanScanResizing) {
-    info.preprocess_type = vart::PreProcessType::DEFAULT;
+    info.preprocess_type = vart::PreProcessType::PANSCAN;
     info.symmetric_padding = false;
   } else {
     info.preprocess_type = vart::PreProcessType::LETTERBOX;
@@ -242,15 +235,17 @@ vart::PreProcessInfo make_resnet50_preprocess_info(uint32_t out_height,
   return info;
 }
 
-// Human-readable preprocess resize policy for startup logs (PANSCAN vs LETTERBOX paths).
+// Human-readable preprocess resize policy for startup logs.
 const char* preprocess_policy_description(const vart::PreProcessInfo& info) {
-  if (resnet50_preprocess_do_pan_scan() && info.preprocess_type == vart::PreProcessType::DEFAULT) {
-    return "PANSCAN + maintain-aspect";
+  switch (info.preprocess_type) {
+    case vart::PreProcessType::PANSCAN:
+      return "PANSCAN (center-crop + maintain-aspect)";
+    case vart::PreProcessType::LETTERBOX:
+      return info.symmetric_padding ? "LETTERBOX + symmetric-padding" : "LETTERBOX";
+    case vart::PreProcessType::DEFAULT:
+    default:
+      return "DEFAULT (stretch-to-fit)";
   }
-  if (info.preprocess_type == vart::PreProcessType::LETTERBOX) {
-    return info.symmetric_padding ? "LETTERBOX + symmetric-padding" : "LETTERBOX";
-  }
-  return "DEFAULT (no PANSCAN in_roi crop)";
 }
 
 // Maps enum to fixed string for console (nullptr for unknown).
@@ -501,41 +496,11 @@ float quant_scale_coeff_for_postprocess(const vart::Runner& runner, const std::s
   return 1.0f;
 }
 
-// Center-crop input ROI to the output aspect ratio before resize (PANSCAN-style).
-void adjust_input_roi_pan_scan(vart::PreProcessOp& preprocess_op) {
-  const float current_aspect_ratio =
-      static_cast<float>(preprocess_op.in_roi.width) / static_cast<float>(preprocess_op.in_roi.height);
-  const float target_aspect_ratio =
-      static_cast<float>(preprocess_op.out_roi.width) / static_cast<float>(preprocess_op.out_roi.height);
-
-  int x = preprocess_op.in_roi.x;
-  int y = preprocess_op.in_roi.y;
-  int width = preprocess_op.in_roi.width;
-  int height = preprocess_op.in_roi.height;
-
-  if (current_aspect_ratio < target_aspect_ratio) {
-    width = preprocess_op.in_roi.width;
-    height = static_cast<int>(static_cast<float>(preprocess_op.in_roi.width) / target_aspect_ratio);
-    x = 0;
-    y = (preprocess_op.in_roi.height - height) / 2;
-  } else {
-    width = static_cast<int>(static_cast<float>(preprocess_op.in_roi.height) * target_aspect_ratio);
-    height = preprocess_op.in_roi.height;
-    x = (preprocess_op.in_roi.width - width) / 2;
-    y = 0;
-  }
-
-  preprocess_op.in_roi.x = static_cast<uint16_t>(x);
-  preprocess_op.in_roi.y = static_cast<uint16_t>(y);
-  preprocess_op.in_roi.width = static_cast<uint16_t>(width);
-  preprocess_op.in_roi.height = static_cast<uint16_t>(height);
-}
-
-// PreProcess::process(std::vector<PreProcessOp>& ops): full-frame in/out ROI, optional PANSCAN in_roi crop.
+// PreProcess::process(std::vector<PreProcessOp>& ops): full-frame in/out ROI; PANSCAN center-crop is
+// handled automatically by the preprocess module when PreProcessInfo::preprocess_type is PANSCAN.
 void run_preprocess_src_to_dest_frame(vart::PreProcess& preprocess,
                                       vart::VideoFrame& in_src_frame,
-                                      vart::VideoFrame& out_dest_frame,
-                                      bool do_pan_scan) {
+                                      vart::VideoFrame& out_dest_frame) {
   const vart::VideoInfo in_vinfo = in_src_frame.get_video_info();
   vart::VideoInfo out_vinfo = preprocess.get_output_vinfo();
 
@@ -556,12 +521,10 @@ void run_preprocess_src_to_dest_frame(vart::PreProcess& preprocess,
   op.out_roi = out_roi;
   op.in_frame = &in_src_frame;
   op.out_frame = &out_dest_frame;
-  if (do_pan_scan) {
-    adjust_input_roi_pan_scan(op);
-  }
   std::vector<vart::PreProcessOp> ops = {op};
-  // VART-X PreProcess API: submit one src→dst frame pair; the implementation reads the input VideoFrame,
+  // VART-X PreProcess API: submit one src->dst frame pair; the implementation reads the input VideoFrame,
   // applies resize/normalize/etc., and writes the preprocessed IFM-sized output VideoFrame.
+  // PanScan center-crop (if enabled) is applied automatically by the preprocess module.
   preprocess.process(ops);
 }
 
@@ -598,6 +561,10 @@ void print_infer_result_node(vart::InferResult& node, int depth) {
 // Loads VAIML model, creates preprocess/postprocess on the XRT device, wires tensor metadata.
 VartZerocopyPipeline::VartZerocopyPipeline(const std::string& model_path, TensorMode mode) : mode_(mode) {
   init_pipeline_(model_path);
+}
+
+size_t VartZerocopyPipeline::batch_size() const {
+  return runner_->get_batch_size(vart::TensorDirection::INPUT);
 }
 
 // Tears down in reverse dependency order: release NPU buffers and shared device last.
@@ -668,9 +635,18 @@ bool VartZerocopyPipeline::setup_npu_runner_(const std::string& model_path) {
     runner_.reset();
     return false;
   }
-  if (runner_->get_batch_size() != static_cast<size_t>(pipeline_cfg::kBatchSize)) {
-    std::cerr << "Error: model batch size is " << runner_->get_batch_size() << " but this app is built for batch "
-              << pipeline_cfg::kBatchSize << ".\n";
+  if (runner_->get_batch_size(vart::TensorDirection::INPUT) != static_cast<size_t>(pipeline_cfg::kBatchSize)) {
+    std::cerr << "Error: model input batch size is " << runner_->get_batch_size(vart::TensorDirection::INPUT)
+              << " but this app is built for batch " << pipeline_cfg::kBatchSize << ".\n";
+    runner_.reset();
+    return false;
+  }
+  // This sample's zero-copy dma-buf buffer binding indexes infer_inputs_[b]/infer_outputs_[b]/
+  // ofm_memory_[b] by the SAME batch slot b across preprocess -> infer -> postprocess, so it
+  // requires input and output batch sizes to both equal kBatchSize. Validate both explicitly.
+  if (runner_->get_batch_size(vart::TensorDirection::OUTPUT) != static_cast<size_t>(pipeline_cfg::kBatchSize)) {
+    std::cerr << "Error: model output batch size is " << runner_->get_batch_size(vart::TensorDirection::OUTPUT)
+              << " but this app is built for batch " << pipeline_cfg::kBatchSize << ".\n";
     runner_.reset();
     return false;
   }
@@ -703,7 +679,7 @@ bool VartZerocopyPipeline::setup_npu_runner_(const std::string& model_path) {
             << "  " << ifm_meta_.size_in_bytes << " bytes\n";
   std::cout << "  " << std::left << std::setw(26) << "OFM (runner output)" << '"' << ofm_meta_.name << "\"  "
             << npu_data_type_name(ofm_meta_.data_type) << "  " << ofm_meta_.size_in_bytes << " bytes  batch "
-            << runner_->get_batch_size() << '\n';
+            << runner_->get_batch_size(vart::TensorDirection::OUTPUT) << '\n';
   return true;
 }
 
@@ -792,6 +768,7 @@ bool VartZerocopyPipeline::configure_postprocess_tensor_info_() {
   ifm_ti.shape = ifm_meta_.shape;
   ifm_ti.size = static_cast<uint32_t>(ifm_meta_.size_in_bytes);
   ifm_ti.scale_coeff = scale_for(ifm_meta_);
+  ifm_ti.memory_layout = std::string(vart::to_string(ifm_meta_.memory_layout));
 
   vart::TensorInfo ofm_ti{};
   ofm_ti.name = ofm_meta_.name;
@@ -800,11 +777,12 @@ bool VartZerocopyPipeline::configure_postprocess_tensor_info_() {
   ofm_ti.shape = ofm_meta_.shape;
   ofm_ti.size = static_cast<uint32_t>(ofm_meta_.size_in_bytes);
   ofm_ti.scale_coeff = scale_for(ofm_meta_);
+  ofm_ti.memory_layout = std::string(vart::to_string(ofm_meta_.memory_layout));
 
   const uint32_t ofm_size = ofm_ti.size;
   const float ofm_scale_coeff = ofm_ti.scale_coeff;
   std::vector<vart::TensorInfo> cfg = {ifm_ti, std::move(ofm_ti)};
-  postprocess_->set_config(cfg, static_cast<uint32_t>(runner_->get_batch_size()));
+  postprocess_->set_config(cfg, static_cast<uint32_t>(runner_->get_batch_size(vart::TensorDirection::OUTPUT)));
   std::cout << "  " << std::left << std::setw(26) << "PostProcess tensor sizes"
             << "IFM " << ifm_ti.size << " B  |  OFM \"" << ofm_meta_.name << "\" " << ofm_size << " B\n";
   std::cout << "  " << std::left << std::setw(26) << "Dequant scale (IFM/OFM)" << ifm_ti.scale_coeff << " / "
@@ -918,17 +896,28 @@ bool VartZerocopyPipeline::create_preprocess_input_frame_() {
 // (XRT, imported from the NpuTensor's exported fd) so PostProcess::process(...) can consume the same
 // physical buffer the runner writes to.
 bool VartZerocopyPipeline::create_infer_output_tensors_() {
-  const size_t batch_size = runner_->get_batch_size();
+  // Input and output batch sizes are queried and sized independently: infer_inputs_/
+  // preproc_output_frames_ are IFM-side slot containers (input batch size), infer_outputs_/ofm_memory_
+  // are OFM-side (output batch size). create_preprocess_outputs_and_bind_infer_inputs_() populates the
+  // former; this function populates the latter.
+  const size_t input_batch_size = runner_->get_batch_size(vart::TensorDirection::INPUT);
+  const size_t output_batch_size = runner_->get_batch_size(vart::TensorDirection::OUTPUT);
   const auto& ofm_npu_meta = ofm_meta_;
 
   infer_inputs_.clear();
   infer_outputs_.clear();
   ofm_memory_.clear();
-  infer_inputs_.resize(batch_size);
-  infer_outputs_.resize(batch_size);
-  ofm_memory_.resize(batch_size);
-  preproc_output_frames_.resize(batch_size);
-  for (size_t b = 0; b < batch_size; ++b) {
+  preproc_output_frames_.clear();
+
+  infer_inputs_.resize(input_batch_size);
+  preproc_output_frames_.resize(input_batch_size);
+  for (size_t b = 0; b < input_batch_size; ++b) {
+    infer_inputs_[b].resize(1);
+  }
+
+  infer_outputs_.resize(output_batch_size);
+  ofm_memory_.resize(output_batch_size);
+  for (size_t b = 0; b < output_batch_size; ++b) {
     vart::NpuTensor ofm;
     try {
       ofm = runner_->allocate_npu_tensor(ofm_npu_meta);
@@ -957,11 +946,11 @@ bool VartZerocopyPipeline::create_infer_output_tensors_() {
       release_infer_tensors();
       return false;
     }
-    infer_inputs_[b].resize(1);
     infer_outputs_[b].push_back(std::move(ofm));
     ofm_memory_[b].push_back(std::move(ofm_mem));
   }
-  std::cout << "[buffers] NPU out \"" << ofm_npu_meta.name << "\"  " << batch_size << "x" << ofm_npu_meta.size_in_bytes
+  std::cout << "[buffers] NPU out \"" << ofm_npu_meta.name << "\"  " << output_batch_size << "x"
+            << ofm_npu_meta.size_in_bytes
             << " B  (runner-allocated; imported into vart::Memory for postprocess via dma-buf fd)\n";
   return true;
 }
@@ -1018,7 +1007,8 @@ bool VartZerocopyPipeline::postprocess() {
     return false;
   }
   try {
-    const size_t batch_size = runner_->get_batch_size();
+    // ofm_memory_/PostProcess::process() are output-batch-driven.
+    const size_t batch_size = runner_->get_batch_size(vart::TensorDirection::OUTPUT);
     if (verbose_) {
       std::cout << "[buffers] postprocess in: shared OFM vart::Memory (same dma-buf as runner OFM)\n";
       std::cout << "[buffers] postprocess out: InferResult tree in last_results_ (labels/scores)\n";
@@ -1118,8 +1108,9 @@ bool VartZerocopyPipeline::run_hw_preprocess_() {
   if (!runner_ || !preprocess_ || !rgb_preprocess_input_frame_) {
     return false;
   }
-  const size_t batch_size = runner_->get_batch_size();
-  if (infer_inputs_.size() != batch_size || infer_outputs_.size() != batch_size) {
+  const size_t input_batch_size = runner_->get_batch_size(vart::TensorDirection::INPUT);
+  const size_t output_batch_size = runner_->get_batch_size(vart::TensorDirection::OUTPUT);
+  if (infer_inputs_.size() != input_batch_size || infer_outputs_.size() != output_batch_size) {
     std::cerr << "run_hw_preprocess_: call allocate_buffers() first.\n";
     return false;
   }
@@ -1148,8 +1139,7 @@ bool VartZerocopyPipeline::run_hls_preprocess_only_() {
       std::cerr << "run_hls_preprocess_only_: output frame[" << b << "] is null.\n";
       return false;
     }
-    run_preprocess_src_to_dest_frame(*preprocess_, *rgb_preprocess_input_frame_, *preproc_output_frames_[b],
-                                     resnet50_preprocess_do_pan_scan());
+    run_preprocess_src_to_dest_frame(*preprocess_, *rgb_preprocess_input_frame_, *preproc_output_frames_[b]);
   }
   return true;
 }
@@ -1191,7 +1181,7 @@ bool VartZerocopyPipeline::create_preprocess_outputs_and_bind_infer_inputs_() {
   // Zero-copy / non-zero-copy IFM bind: preprocess writes preproc_output_frames_[b]; NpuTensor(ifm_meta_,
   // &fd, DMA_FD) wraps the same buffer for the runner. The preprocess output byte size must equal the
   // runner IFM byte size — that is what makes the dma-buf import a valid IFM tensor.
-  const size_t batch_size = runner_->get_batch_size();
+  const size_t batch_size = runner_->get_batch_size(vart::TensorDirection::INPUT);
   const auto& ifm_npu_meta = ifm_meta_;
   vart::VideoInfo out_vinfo = preprocess_->get_output_vinfo();
   const size_t out_frame_bytes = bytes_for_video_format(out_vinfo.fmt, out_vinfo.width, out_vinfo.height);
@@ -1218,7 +1208,7 @@ bool VartZerocopyPipeline::create_preprocess_outputs_and_bind_infer_inputs_() {
     preproc_output_frames_[b] = std::make_unique<vart::VideoFrame>(
         vart::VideoFrameImplType::XRT, out_frame_bytes, kPreprocessOutputMemBank, out_vinfo, preprocess_device_);
     vart::VideoFrame& out_frame = *preproc_output_frames_[b];
-    run_preprocess_src_to_dest_frame(*preprocess_, rgb_frame, out_frame, resnet50_preprocess_do_pan_scan());
+    run_preprocess_src_to_dest_frame(*preprocess_, rgb_frame, out_frame);
 
     // ifm_fd is a per-iteration local. NpuTensor(meta, &fd, DMA_FD) takes the *value* of the fd
     // (not a reference to this local). Do NOT hoist ifm_fd outside the loop or pass the same

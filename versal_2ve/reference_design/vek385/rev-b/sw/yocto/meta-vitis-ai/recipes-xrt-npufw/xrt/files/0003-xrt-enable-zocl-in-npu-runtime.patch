@@ -1,0 +1,837 @@
+diff --git a/xrt/src/runtime_src/core/edge/user/dev_zocl.cpp b/xrt/src/runtime_src/core/edge/user/dev_zocl.cpp
+index c836da5e9..1ca9548a7 100644
+--- a/xrt/src/runtime_src/core/edge/user/dev_zocl.cpp
++++ b/xrt/src/runtime_src/core/edge/user/dev_zocl.cpp
+@@ -34,7 +34,8 @@ dev_zocl::
+ create_device(device::handle_type handle, device::id_type id) const
+ {
+   // deliberately not using std::make_shared (used with weak_ptr)
+-  return std::shared_ptr<xrt_core::device_linux>(new xrt_core::device_linux(handle, id, true));
++  return std::shared_ptr<xrt_core::edge::device_linux>(
++    new xrt_core::edge::device_linux(handle, id, true));
+ }
+ 
+ } //namespace xrt_core::edge
+\ No newline at end of file
+diff --git a/xrt/src/runtime_src/core/edge/user/device_linux.cpp b/xrt/src/runtime_src/core/edge/user/device_linux.cpp
+index 20ff053d3..6ad4a023f 100644
+--- a/xrt/src/runtime_src/core/edge/user/device_linux.cpp
++++ b/xrt/src/runtime_src/core/edge/user/device_linux.cpp
+@@ -7,7 +7,11 @@
+ #include "aie_sys_parser.h"
+ #include "core/common/smi/smi.h"
+ #include "core/common/smi/smi_alveo.h"
+-#include "system_linux.h"
++#ifdef XRT_NPU_ZOCL
++# include "core/pcie/linux/npu_zocl.h"
++#else
++# include "system_linux.h"
++#endif
+ 
+ #include "core/common/debug_ip.h"
+ #include "core/common/query_requests.h"
+@@ -70,10 +74,25 @@ struct drm_fd
+ 
+ static std::map<query::key_type, std::unique_ptr<query::request>> query_tbl;
+ 
++#ifdef XRT_NPU_ZOCL
++ZYNQ::shim*
++get_zocl_shim(xclDeviceHandle handle)
++{
++  auto shim = ZYNQ::shim::handleCheck(handle);
++  if (!shim)
++    throw xrt_core::error("Invalid ZOCL shim handle");
++  return shim;
++}
++#endif
++
+ xrt_core::edge::dev_zocl*
+ get_edgedev(const xrt_core::device* device)
+ {
++#ifdef XRT_NPU_ZOCL
++  auto edev = xrt_core::npu_zocl::get_dev(device->get_device_id());
++#else
+   auto edev = xrt_core::edge_linux::get_dev(device->get_device_id());
++#endif
+   if (!edev)
+     throw xrt_core::error("Invalid device handle");
+   return dynamic_cast<xrt_core::edge::dev_zocl*>(edev.get());
+@@ -112,7 +131,11 @@ static xclDeviceInfo2
+ init_device_info(const xrt_core::device* device)
+ {
+   xclDeviceInfo2 dinfo;
++#ifdef XRT_NPU_ZOCL
++  get_zocl_shim(device->get_user_handle())->xclGetDeviceInfo2(&dinfo);
++#else
+   xclGetDeviceInfo2(device->get_user_handle(), &dinfo);
++#endif
+   return dinfo;
+ }
+ 
+@@ -901,7 +924,11 @@ struct debug_ip_layout_path
+     path.resize(size);
+ 
+     // Get Debug Ip layout path
++#ifdef XRT_NPU_ZOCL
++    get_zocl_shim(device->get_user_handle())->xclGetDebugIPlayoutPath(const_cast<char*>(path.data()), size);
++#else
+     xclGetDebugIPlayoutPath(device->get_user_handle(), const_cast<char*>(path.data()), size);
++#endif
+     return path;
+   }
+ };
+@@ -912,7 +939,11 @@ struct device_clock_freq_mhz {
+   static result_type
+   get(const xrt_core::device* device, key_type key)
+   {
++#ifdef XRT_NPU_ZOCL
++    return get_zocl_shim(device->get_user_handle())->xclGetDeviceClockFreqMHz();
++#else
+     return xclGetDeviceClockFreqMHz(device->get_user_handle());
++#endif
+   }
+ };
+ 
+@@ -927,7 +958,11 @@ struct trace_buffer_info
+     result_type buf_info;
+ 
+     // Get trace buf size and trace samples
++#ifdef XRT_NPU_ZOCL
++    get_zocl_shim(device->get_user_handle())->xclGetTraceBufferInfo(input_samples, buf_info.samples, buf_info.buf_size);
++#else
+     xclGetTraceBufferInfo(device->get_user_handle(), input_samples, buf_info.samples, buf_info.buf_size);
++#endif
+     return buf_info;
+   }
+ };
+@@ -942,8 +977,14 @@ struct host_max_bandwidth_mbps
+     bool read = std::any_cast<bool>(param);
+ 
+     // Get read/write host max bandwidth in MBps
++#ifdef XRT_NPU_ZOCL
++    auto shim = get_zocl_shim(device->get_user_handle());
++    return read ? shim->xclGetHostReadMaxBandwidthMBps()
++                : shim->xclGetHostWriteMaxBandwidthMBps();
++#else
+     return read ? xclGetHostReadMaxBandwidthMBps(device->get_user_handle())
+                 : xclGetHostWriteMaxBandwidthMBps(device->get_user_handle());
++#endif
+   }
+ };
+ 
+@@ -957,8 +998,14 @@ struct kernel_max_bandwidth_mbps
+     bool read = std::any_cast<bool>(param);
+ 
+     // Get read/write host max bandwidth in MBps
++#ifdef XRT_NPU_ZOCL
++    auto shim = get_zocl_shim(device->get_user_handle());
++    return read ? shim->xclGetKernelReadMaxBandwidthMBps()
++                : shim->xclGetKernelWriteMaxBandwidthMBps();
++#else
+     return read ? xclGetKernelReadMaxBandwidthMBps(device->get_user_handle())
+                 : xclGetKernelWriteMaxBandwidthMBps(device->get_user_handle());
++#endif
+   }
+ };
+ 
+@@ -975,8 +1022,13 @@ struct read_trace_data
+     trace_buf.resize(args.buf_size);
+ 
+     // read trace data
++#ifdef XRT_NPU_ZOCL
++    get_zocl_shim(device->get_user_handle())->xclReadTraceData(
++      trace_buf.data(), args.buf_size, args.samples, args.ip_base_addr, args.words_per_sample);
++#else
+     xclReadTraceData(device->get_user_handle(), trace_buf.data(),
+                      args.buf_size, args.samples, args.ip_base_addr, args.words_per_sample);
++#endif
+     return trace_buf;
+   }
+ };
+@@ -1224,7 +1276,7 @@ static X x;
+ 
+ }
+ 
+-namespace xrt_core {
++namespace xrt_core::edge {
+ 
+ const query::request&
+ device_linux::
+@@ -1240,9 +1292,22 @@ lookup_query(query::key_type query_key) const
+ 
+ device_linux::
+ device_linux(handle_type device_handle, id_type device_id, bool user)
++#ifdef XRT_NPU_ZOCL
++  : noshim<device_edge>(device_handle, device_id, user)
++#else
+   : shim<device_edge>(device_handle, device_id, user)
++#endif
++{
++}
++
++#ifdef XRT_NPU_ZOCL
++void
++device_linux::
++close_device()
+ {
++  delete get_zocl_shim(get_device_handle());
+ }
++#endif
+ 
+ void
+ device_linux::
+@@ -1303,7 +1368,11 @@ void
+ device_linux::
+ set_cu_read_range(cuidx_type cuidx, uint32_t start, uint32_t size)
+ {
++#ifdef XRT_NPU_ZOCL
++  if (auto ret = get_zocl_shim(get_device_handle())->xclIPSetReadRange(cuidx.index, start, size))
++#else
+   if (auto ret = xclIPSetReadRange(get_device_handle(), cuidx.index, start, size))
++#endif
+     throw xrt_core::error(ret, "failed to set cu read range");
+ }
+ 
+@@ -1354,17 +1423,75 @@ std::unique_ptr<buffer_handle>
+ device_linux::
+ import_bo(pid_t pid, shared_handle::export_handle ehdl)
+ {
+-  if (pid == 0 || getpid() == pid)
++  if (pid == 0 || getpid() == pid) {
++#ifdef XRT_NPU_ZOCL
++    return get_zocl_shim(get_device_handle())->xclImportBO(ehdl, 0);
++#else
+     return xrt::shim_int::import_bo(get_device_handle(), ehdl);
++#endif
++  }
+ 
+   throw xrt_core::error(std::errc::not_supported, __func__);
+ }
+ 
++std::unique_ptr<hwctx_handle>
++device_linux::
++create_hw_context(const xrt::uuid& xclbin_uuid,
++                  const xrt::hw_context::cfg_param_type& cfg_param,
++                  xrt::hw_context::access_mode mode) const
++{
++#ifdef XRT_NPU_ZOCL
++  return get_zocl_shim(get_device_handle())->create_hw_context(
++    get_device_handle(), xclbin_uuid, cfg_param, mode);
++#else
++  return xrt::shim_int::create_hw_context(get_device_handle(), xclbin_uuid, cfg_param, mode);
++#endif
++}
++
++void
++device_linux::
++register_xclbin(const xrt::xclbin& xclbin) const
++{
++#ifdef XRT_NPU_ZOCL
++  get_zocl_shim(get_device_handle())->register_xclbin(xclbin);
++#else
++  xrt::shim_int::register_xclbin(get_device_handle(), xclbin);
++#endif
++}
++
++std::unique_ptr<buffer_handle>
++device_linux::
++alloc_bo(size_t size, uint64_t flags)
++{
++#ifdef XRT_NPU_ZOCL
++  return get_zocl_shim(get_device_handle())->xclAllocBO(size, xcl_bo_flags{flags}.flags);
++#else
++  return xrt::shim_int::alloc_bo(get_device_handle(), size, xcl_bo_flags{flags}.flags);
++#endif
++}
++
++std::unique_ptr<buffer_handle>
++device_linux::
++alloc_bo(void* userptr, size_t size, uint64_t flags)
++{
++#ifdef XRT_NPU_ZOCL
++  return get_zocl_shim(get_device_handle())->xclAllocUserPtrBO(
++    userptr, size, xcl_bo_flags{flags}.flags);
++#else
++  return xrt::shim_int::alloc_bo(
++    get_device_handle(), userptr, size, xcl_bo_flags{flags}.flags);
++#endif
++}
++
+ void
+ device_linux::
+ get_device_info(xclDeviceInfo2 *info)
+ {
++#ifdef XRT_NPU_ZOCL
++  if (auto ret = get_zocl_shim(get_device_handle())->xclGetDeviceInfo2(info))
++#else
+   if (auto ret = xclGetDeviceInfo2(get_device_handle(), info))
++#endif
+     throw system_error(ret, "failed to get device info");
+ }
+ 
+@@ -1372,6 +1499,10 @@ std::string
+ device_linux::
+ get_sysfs_path(const std::string& subdev, const std::string& entry)
+ {
++#ifdef XRT_NPU_ZOCL
++  (void)subdev;
++  return get_zocl_shim(get_device_handle())->xclGetSysfsPath(entry);
++#else
+   constexpr size_t max_path = 256;
+   std::string path_buf(max_path, '\0');
+ 
+@@ -1379,6 +1510,7 @@ get_sysfs_path(const std::string& subdev, const std::string& entry)
+     throw system_error(ret, "failed to get device info");
+ 
+   return path_buf;
++#endif
+ }
+ 
+ #ifdef XRT_ENABLE_AIE
+@@ -1433,13 +1565,45 @@ void
+ device_linux::
+ load_axlf_meta(const axlf* buffer)
+ {
++#ifdef XRT_NPU_ZOCL
++  register_axlf(buffer);
++  auto drv = get_zocl_shim(get_device_handle());
++  auto data = get_axlf_section(AIE_METADATA);
++  if (data.first && data.second)
++    drv->registerAieArray();
++#else
+   if (auto ret = xclLoadXclBinMeta(get_device_handle(), buffer))
+     throw system_error(ret, "failed to load xclbin");
++#endif
+ }
+ #endif
+ ////////////////////////////////////////////////////////////////
+ // Custom IP interrupt handling
+ ////////////////////////////////////////////////////////////////
++xclInterruptNotifyHandle
++device_linux::
++open_ip_interrupt_notify(unsigned int ip_index)
++{
++#ifdef XRT_NPU_ZOCL
++  return get_zocl_shim(get_device_handle())->xclOpenIPInterruptNotify(ip_index, 0);
++#else
++  return xclOpenIPInterruptNotify(get_device_handle(), ip_index, 0);
++#endif
++}
++
++void
++device_linux::
++close_ip_interrupt_notify(xclInterruptNotifyHandle handle)
++{
++#ifdef XRT_NPU_ZOCL
++  if (auto ret = get_zocl_shim(get_device_handle())->xclCloseIPInterruptNotify(handle))
++    throw system_error(ret, "failed to close IP interrupt notification");
++#else
++  if (auto ret = xclCloseIPInterruptNotify(get_device_handle(), handle))
++    throw system_error(ret, "failed to close IP interrupt notification");
++#endif
++}
++
+ void
+ device_linux::
+ enable_ip_interrupt(xclInterruptNotifyHandle handle)
+@@ -1494,4 +1658,4 @@ wait_ip_interrupt(xclInterruptNotifyHandle handle, int32_t timeout)
+   throw error(-EINVAL, boost::str(boost::format("wait_timeout: POSIX poll unexpected event: %d")  % pfd.revents));
+ }
+ 
+-} // xrt_core
++} // namespace xrt_core::edge
+diff --git a/xrt/src/runtime_src/core/edge/user/device_linux.h b/xrt/src/runtime_src/core/edge/user/device_linux.h
+index 2bf05d939..a8932f6ab 100644
+--- a/xrt/src/runtime_src/core/edge/user/device_linux.h
++++ b/xrt/src/runtime_src/core/edge/user/device_linux.h
+@@ -14,15 +14,23 @@
+ #include "core/common/shim/graph_handle.h"
+ #include "core/common/shim/profile_handle.h"
+ 
+-namespace xrt_core {
++namespace xrt_core::edge {
+ 
+ // concrete class derives from device_edge, but mixes in
+ // shim layer functions for access through base class
++#ifdef XRT_NPU_ZOCL
++class device_linux : public noshim<device_edge>
++#else
+ class device_linux : public shim<device_edge>
++#endif
+ {
+ public:
+   device_linux(handle_type device_handle, id_type device_id, bool user);
+ 
++#ifdef XRT_NPU_ZOCL
++  void close_device() override;
++#endif
++
+   // query functions
+   virtual void read_dma_stats(boost::property_tree::ptree& pt) const;
+ 
+@@ -72,16 +80,10 @@ public:
+   // Redefined from xrt_core::ishim
+   ////////////////////////////////////////////////////////////////
+   xclInterruptNotifyHandle
+-  open_ip_interrupt_notify(unsigned int ip_index) override
+-  {
+-    return xclOpenIPInterruptNotify(get_device_handle(), ip_index, 0);
+-  }
++  open_ip_interrupt_notify(unsigned int ip_index) override;
+ 
+   void
+-  close_ip_interrupt_notify(xclInterruptNotifyHandle handle) override
+-  {
+-    xclCloseIPInterruptNotify(get_device_handle(), handle);
+-  }
++  close_ip_interrupt_notify(xclInterruptNotifyHandle handle) override;
+ 
+   void
+   enable_ip_interrupt(xclInterruptNotifyHandle) override;
+@@ -98,28 +100,16 @@ public:
+   virtual std::unique_ptr<hwctx_handle>
+   create_hw_context(const xrt::uuid& xclbin_uuid,
+                     const xrt::hw_context::cfg_param_type& cfg_param,
+-                    xrt::hw_context::access_mode mode) const override
+-  {
+-    return xrt::shim_int::create_hw_context(get_device_handle(), xclbin_uuid, cfg_param, mode);
+-  }
++                    xrt::hw_context::access_mode mode) const override;
+ 
+   void
+-  register_xclbin(const xrt::xclbin& xclbin) const override
+-  {
+-    xrt::shim_int::register_xclbin(get_device_handle(), xclbin);
+-  }
++  register_xclbin(const xrt::xclbin& xclbin) const override;
+ 
+   std::unique_ptr<buffer_handle>
+-  alloc_bo(size_t size, uint64_t flags) override
+-  {
+-    return xrt::shim_int::alloc_bo(get_device_handle(), size, xcl_bo_flags{flags}.flags);
+-  }
++  alloc_bo(size_t size, uint64_t flags) override;
+ 
+   std::unique_ptr<buffer_handle>
+-  alloc_bo(void* userptr, size_t size, uint64_t flags) override
+-  {
+-    return xrt::shim_int::alloc_bo(get_device_handle(), userptr, size, xcl_bo_flags{flags}.flags);
+-  }
++  alloc_bo(void* userptr, size_t size, uint64_t flags) override;
+ 
+   std::unique_ptr<buffer_handle>
+   import_bo(pid_t pid, shared_handle::export_handle ehdl) override;
+@@ -130,6 +120,6 @@ private:
+   lookup_query(query::key_type query_key) const;
+ };
+ 
+-}
++} // namespace xrt_core::edge
+ 
+ #endif /* EDGE_DEVICE_LINUX_H */
+diff --git a/xrt/src/runtime_src/core/edge/user/shim.cpp b/xrt/src/runtime_src/core/edge/user/shim.cpp
+index 2f83d8685..74d4a908b 100644
+--- a/xrt/src/runtime_src/core/edge/user/shim.cpp
++++ b/xrt/src/runtime_src/core/edge/user/shim.cpp
+@@ -2,7 +2,11 @@
+ // Copyright (C) 2016-2022 Xilinx, Inc. All rights reserved.
+ // Copyright (C) 2022-2025 Advanced Micro Devices, Inc. All rights reserved.
+ #include "shim.h"
+-#include "system_linux.h"
++#ifdef XRT_NPU_ZOCL
++# include "core/common/system.h"
++#else
++# include "system_linux.h"
++#endif
+ #include "hwctx_object.h"
+ #include "dev_zocl.h"
+ 
+@@ -45,13 +49,25 @@
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
+ 
+-#include "plugin/xdp/hal_profile.h"
++#ifdef XRT_NPU_ZOCL
++# include "core/pcie/linux/plugin/xdp/hal_profile.h"
++#else
++# include "plugin/xdp/hal_profile.h"
++#endif
+ 
+ #ifndef __HWEM__
+-#include "plugin/xdp/hal_api_interface.h"
++# ifdef XRT_NPU_ZOCL
++#  include "core/pcie/linux/plugin/xdp/hal_api_interface.h"
++# else
++#  include "plugin/xdp/hal_api_interface.h"
++# endif
+ #endif
+ 
+-#include "plugin/xdp/shim_callbacks.h"
++#ifdef XRT_NPU_ZOCL
++# include "core/pcie/linux/plugin/xdp/shim_callbacks.h"
++#else
++# include "plugin/xdp/shim_callbacks.h"
++#endif
+ 
+ #if defined(XRT_ENABLE_LIBDFX)
+ extern "C" {
+@@ -115,7 +131,11 @@ std::map<uint64_t, uint32_t *> shim::mKernelControl;
+ 
+ shim::
+ shim(unsigned index, std::shared_ptr<xrt_core::edge::dev_zocl> edev_zocl)
++#ifdef XRT_NPU_ZOCL
++  : mCoreDevice(xrt_core::get_userpf_device(this, index))
++#else
+   : mCoreDevice(xrt_core::edge_linux::get_userpf_device(this, index))
++#endif
+   , mBoardNumber(index)
+   , mKernelClockFreq(100)
+   , mDev{std::move(edev_zocl)}
+@@ -2243,6 +2263,7 @@ setAIEAccessMode(xrt::aie::access_mode am)
+ ////////////////////////////////////////////////////////////////
+ // Implementation of internal SHIM APIs
+ ////////////////////////////////////////////////////////////////
++#ifndef XRT_NPU_ZOCL
+ namespace xrt::shim_int {
+ 
+ std::unique_ptr<xrt_core::hwctx_handle>
+@@ -3147,3 +3168,4 @@ xclErrorClear(xclDeviceHandle handle)
+ 
+   return drv->xclErrorClear();
+ }
++#endif // XRT_NPU_ZOCL
+diff --git a/xrt/src/runtime_src/core/pcie/linux/CMakeLists.txt b/xrt/src/runtime_src/core/pcie/linux/CMakeLists.txt
+index aa4a27312..b0a8340ef 100644
+--- a/xrt/src/runtime_src/core/pcie/linux/CMakeLists.txt
++++ b/xrt/src/runtime_src/core/pcie/linux/CMakeLists.txt
+@@ -19,6 +19,50 @@ add_library(core_pcielinux_objects OBJECT
+   system_linux.cpp
+   )
+ 
++set(NPU_ZOCL_OBJECTS)
++if (XRT_NPU_ZOCL)
++  set(XRT_EDGE_ROOT ${XRT_SOURCE_DIR}/runtime_src/core/edge)
++  add_library(core_npu_zocl_objects OBJECT
++    ${XRT_EDGE_ROOT}/common/aie_parser.cpp
++    ${XRT_EDGE_ROOT}/common/device_edge.cpp
++    ${XRT_EDGE_ROOT}/user/aie_sys_parser.cpp
++    ${XRT_EDGE_ROOT}/user/dev.cpp
++    ${XRT_EDGE_ROOT}/user/dev_zocl.cpp
++    ${XRT_EDGE_ROOT}/user/device_linux.cpp
++    ${XRT_EDGE_ROOT}/user/drv_zocl.cpp
++    ${XRT_EDGE_ROOT}/user/hwctx_object.cpp
++    ${XRT_EDGE_ROOT}/user/shim.cpp
++    ${XRT_EDGE_ROOT}/user/aie/aie.cpp
++    ${XRT_EDGE_ROOT}/user/aie/aie_buffer_object.cpp
++    ${XRT_EDGE_ROOT}/user/aie/aied.cpp
++    ${XRT_EDGE_ROOT}/user/aie/graph_object.cpp
++    ${XRT_EDGE_ROOT}/user/aie/profile_object.cpp
++    ${XRT_EDGE_ROOT}/user/aie/common_layer/adf_api_message.cpp
++    ${XRT_EDGE_ROOT}/user/aie/common_layer/adf_profiling_api.cpp
++    ${XRT_EDGE_ROOT}/user/aie/common_layer/adf_runtime_api.cpp
++    ${XRT_EDGE_ROOT}/user/aie/common_layer/fal_util.cpp
++    )
++
++  target_compile_definitions(core_npu_zocl_objects
++    PRIVATE
++    XRT_NPU_ZOCL
++    XRT_ENABLE_AIE
++    XCLHAL_MAJOR_VER=2
++    XCLHAL_MINOR_VER=1
++    )
++
++  target_include_directories(core_npu_zocl_objects
++    PRIVATE
++    ${XRT_EDGE_ROOT}/user
++    ${DRM_INCLUDE_DIRS}
++    ${XRT_SOURCE_DIR}/runtime_src
++    ${XRT_BINARY_DIR}/gen
++    )
++
++  set(NPU_ZOCL_OBJECTS $<TARGET_OBJECTS:core_npu_zocl_objects>)
++  target_compile_definitions(core_pcielinux_objects PRIVATE XRT_NPU_ZOCL)
++endif()
++
+ target_compile_definitions(core_pcielinux_objects
+   PRIVATE
+   XCLHAL_MAJOR_VER=2
+@@ -38,6 +82,7 @@ add_library(xrt_core SHARED
+   $<TARGET_OBJECTS:core_smi_alveo_objects>
+   $<TARGET_OBJECTS:core_pciecommon_objects>
+   $<TARGET_OBJECTS:core_common_objects>
++  ${NPU_ZOCL_OBJECTS}
+   )
+ 
+ add_library(xrt_core_static STATIC
+@@ -46,6 +91,7 @@ add_library(xrt_core_static STATIC
+   $<TARGET_OBJECTS:core_smi_alveo_objects>
+   $<TARGET_OBJECTS:core_pciecommon_objects>
+   $<TARGET_OBJECTS:core_common_objects>
++  ${NPU_ZOCL_OBJECTS}
+   )
+ 
+ set_target_properties(xrt_core PROPERTIES
+@@ -62,6 +108,14 @@ target_link_libraries(xrt_core
+   uuid
+   )
+ 
++if (XRT_NPU_ZOCL)
++  # Link flag rather than the target name: an in-tree aie-rt target named
++  # xaiengine exists on the NPU path, but its headers are the NPU variant and
++  # are incompatible with the xaiefal headers the edge AIE sources compile
++  # against.  Both must come from the same installed libxaiengine.
++  target_link_libraries(xrt_core PRIVATE -lxaiengine)
++endif()
++
+ # Targets linking with xrt_core_static must also link with additional
+ # libraries to satisfy xrt_core_static dependencies. These type of
+ # link dependencies are known as INTERFACE dependencies.  Here the
+@@ -76,6 +130,10 @@ target_link_libraries(xrt_core_static
+   pthread
+   )
+ 
++if (XRT_NPU_ZOCL)
++  target_link_libraries(xrt_core_static INTERFACE -lxaiengine)
++endif()
++
+ if (NOT WIN32)
+   # On linux use xrt_core.a
+   set_target_properties(xrt_core_static PROPERTIES OUTPUT_NAME "xrt_core")
+diff --git a/xrt/src/runtime_src/core/pcie/linux/system_linux.cpp b/xrt/src/runtime_src/core/pcie/linux/system_linux.cpp
+index 750ff1139..079ca2565 100644
+--- a/xrt/src/runtime_src/core/pcie/linux/system_linux.cpp
++++ b/xrt/src/runtime_src/core/pcie/linux/system_linux.cpp
+@@ -10,6 +10,11 @@
+ #include "pcidrv_xocl.h"
+ #include "core/common/module_loader.h"
+ #include "core/common/query_requests.h"
++#ifdef XRT_NPU_ZOCL
++# include "npu_zocl.h"
++# include "core/edge/user/dev.h"
++# include "core/edge/user/drv_zocl.h"
++#endif
+ 
+ // 3rd Party Library - Include files
+ #include <boost/algorithm/string/predicate.hpp>
+@@ -138,6 +143,27 @@ get_num_dev_total(bool is_user) const
+   return mgmt_ready_list.size() + mgmt_nonready_list.size();
+ }
+ 
++#ifdef XRT_NPU_ZOCL
++bool
++system_linux::
++is_zocl_device(device::id_type id) const
++{
++  const auto zocl_begin = static_cast<device::id_type>(user_ready_list.size());
++  const auto zocl_end = zocl_begin + static_cast<device::id_type>(zocl_dev_list.size());
++  return id >= zocl_begin && id < zocl_end;
++}
++
++std::shared_ptr<edge::dev>
++system_linux::
++get_zocl_dev(device::id_type id) const
++{
++  if (!is_zocl_device(id))
++    throw std::runtime_error("No ZOCL device with index '" + std::to_string(id) + "'");
++
++  return zocl_dev_list.at(id - user_ready_list.size());
++}
++#endif
++
+ system_linux::
+ system_linux()
+ {
+@@ -160,6 +186,15 @@ system_linux()
+     else
+       driver->scan_devices(mgmt_ready_list, mgmt_nonready_list);
+   }
++
++#ifdef XRT_NPU_ZOCL
++  try {
++    edge::drv_zocl{}.scan_devices(zocl_dev_list);
++  }
++  catch (const std::exception& ex) {
++    xrt_core::send_exception_message(ex.what(), "WARNING");
++  }
++#endif
+ }
+ 
+ void
+@@ -173,6 +208,10 @@ get_driver_info(boost::property_tree::ptree &pt)
+     if (!_drv.empty())
+       _ptDriverInfo.push_back( {"", _drv} );
+   }
++#ifdef XRT_NPU_ZOCL
++  if (!zocl_dev_list.empty())
++    _ptDriverInfo.push_back({"", driver_version("zocl")});
++#endif
+   pt.put_child("drivers", _ptDriverInfo);
+ }
+ 
+@@ -187,15 +226,20 @@ get_device_id(const std::string& bdf) const
+   try {
+     for (unsigned int i = 0;; i++) {
+       auto dev = get_pcidev(i);
++      auto unified_id = i;
++#ifdef XRT_NPU_ZOCL
++      if (i >= user_ready_list.size())
++        unified_id += zocl_dev_list.size();
++#endif
+       // [dddd:bb:dd.f]
+       auto dev_bdf = boost::str(boost::format("%04x:%02x:%02x.%01x") % dev->m_domain % dev->m_bus % dev->m_dev % dev->m_func);
+       if (dev_bdf == bdf)
+-        return i;
++        return unified_id;
+       // consider default domain as 0000 and try to find a matching device
+       if (dev->m_domain == 0) {
+         dev_bdf = boost::str(boost::format("%02x:%02x.%01x") % dev->m_bus % dev->m_dev % dev->m_func);
+         if (dev_bdf == bdf)
+-          return i;
++          return unified_id;
+       }
+     }
+   }
+@@ -208,6 +252,14 @@ std::pair<device::id_type, device::id_type>
+ system_linux::
+ get_total_devices(bool is_user) const
+ {
++#ifdef XRT_NPU_ZOCL
++  if (is_user) {
++    const auto zocl_count = static_cast<device::id_type>(zocl_dev_list.size());
++    return std::make_pair(
++      static_cast<device::id_type>(get_num_dev_total(true)) + zocl_count,
++      static_cast<device::id_type>(get_num_dev_ready(true)) + zocl_count);
++  }
++#endif
+   return std::make_pair(pci::get_dev_total(is_user), pci::get_dev_ready(is_user));
+ }
+ 
+@@ -215,6 +267,13 @@ std::tuple<uint16_t, uint16_t, uint16_t, uint16_t>
+ system_linux::
+ get_bdf_info(device::id_type id, bool is_user) const
+ {
++#ifdef XRT_NPU_ZOCL
++  if (is_user && is_zocl_device(id))
++    return std::make_tuple(0, 0, 0, static_cast<uint16_t>(id));
++
++  if (is_user && id >= user_ready_list.size() + zocl_dev_list.size())
++    id -= zocl_dev_list.size();
++#endif
+   auto pdev = get_pcidev(id, is_user);
+   return std::make_tuple(pdev->m_domain, pdev->m_bus, pdev->m_dev, pdev->m_func);
+ }
+@@ -223,6 +282,15 @@ std::shared_ptr<device>
+ system_linux::
+ get_userpf_device(device::id_type id) const
+ {
++#ifdef XRT_NPU_ZOCL
++  if (is_zocl_device(id)) {
++    auto zdev = get_zocl_dev(id);
++    return xrt_core::get_userpf_device(zdev->create_shim(id));
++  }
++
++  if (id >= user_ready_list.size() + zocl_dev_list.size())
++    id -= zocl_dev_list.size();
++#endif
+   auto pdev = get_pcidev(id, true);
+   return xrt_core::get_userpf_device(pdev->create_shim(id));
+ }
+@@ -231,6 +299,13 @@ std::shared_ptr<device>
+ system_linux::
+ get_userpf_device(device::handle_type handle, device::id_type id) const
+ {
++#ifdef XRT_NPU_ZOCL
++  if (is_zocl_device(id))
++    return get_zocl_dev(id)->create_device(handle, id);
++
++  if (id >= user_ready_list.size() + zocl_dev_list.size())
++    id -= zocl_dev_list.size();
++#endif
+   auto pdev = get_pcidev(id, true);
+   return pdev->create_device(handle, id);
+ }
+@@ -315,4 +390,16 @@ register_driver(std::shared_ptr<drv> driver)
+ 
+ } // namespace pci
+ 
++#ifdef XRT_NPU_ZOCL
++namespace npu_zocl {
++
++std::shared_ptr<edge::dev>
++get_dev(device::id_type id)
++{
++  return singleton_system_linux()->get_zocl_dev(id);
++}
++
++} // namespace npu_zocl
++#endif
++
+ } // xrt_core
+diff --git a/xrt/src/runtime_src/core/pcie/linux/system_linux.h b/xrt/src/runtime_src/core/pcie/linux/system_linux.h
+index a9426dac9..f4a0ae32a 100644
+--- a/xrt/src/runtime_src/core/pcie/linux/system_linux.h
++++ b/xrt/src/runtime_src/core/pcie/linux/system_linux.h
+@@ -7,6 +7,10 @@
+ #include "pcidev.h"
+ #include "core/pcie/common/system_pcie.h"
+ 
++namespace xrt_core::edge {
++class dev;
++}
++
+ namespace xrt_core {
+ 
+ class system_linux : public system_pcie
+@@ -57,12 +61,24 @@ public:
+   size_t
+   get_num_dev_total(bool is_user) const;
+ 
++#ifdef XRT_NPU_ZOCL
++  bool
++  is_zocl_device(device::id_type id) const;
++
++  std::shared_ptr<edge::dev>
++  get_zocl_dev(device::id_type id) const;
++#endif
++
+ private:
+   std::vector<std::shared_ptr<pci::dev>> user_ready_list;
+   std::vector<std::shared_ptr<pci::dev>> user_nonready_list;
+ 
+   std::vector<std::shared_ptr<pci::dev>> mgmt_ready_list;
+   std::vector<std::shared_ptr<pci::dev>> mgmt_nonready_list;
++
++#ifdef XRT_NPU_ZOCL
++  std::vector<std::shared_ptr<edge::dev>> zocl_dev_list;
++#endif
+ };
+ 
+ namespace pci {
+diff --git a/xrt/src/runtime_src/core/pcie/linux/npu_zocl.h b/xrt/src/runtime_src/core/pcie/linux/npu_zocl.h
+new file mode 100644
+index 000000000..cb880f614
+--- /dev/null
++++ b/xrt/src/runtime_src/core/pcie/linux/npu_zocl.h
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: Apache-2.0
++// Copyright (C) 2026 Advanced Micro Devices, Inc. All rights reserved.
++
++#ifndef XRT_CORE_PCIE_LINUX_NPU_ZOCL_H
++#define XRT_CORE_PCIE_LINUX_NPU_ZOCL_H
++
++#include "core/common/device.h"
++
++#include <memory>
++
++namespace xrt_core::edge {
++class dev;
++}
++
++namespace xrt_core::npu_zocl {
++
++std::shared_ptr<edge::dev>
++get_dev(device::id_type id);
++
++} // namespace xrt_core::npu_zocl
++
++#endif

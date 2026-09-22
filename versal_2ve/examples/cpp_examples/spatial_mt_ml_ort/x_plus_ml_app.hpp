@@ -67,7 +67,6 @@
 /* To dump application input frames and inference input frames in bgr */
 #define DUMP_INPUTS
 
-/* TODO membank should come for infer */
 #define DEFAULT_FRAME_MEMBANK 2
 #define DEFAULT_DEVICE_INDEX 1
 /* HLS HW accelerated image pre-processing IP */
@@ -103,6 +102,7 @@ typedef struct PipelineData {
   vector<shared_ptr<vart::VideoFrame>> preprocessed_frames;         // Input preprocessed frames
   vector<PredResult> model1_top_predictions;                        // Model 1 predictions
   vector<vector<shared_ptr<vart::InferResult>>> inference_results;  // Inference results for cascading
+  vector<vart::InferResScaleInfo> scale_info;                       // Per-frame preprocess geometry
   string filename;                                                  // Input file name
   int32_t file_index;                                               // File index
   int32_t pipeline_id;                                              // Pipeline identifier
@@ -352,9 +352,8 @@ typedef struct {
   uint32_t input_height;
   uint32_t input_width;
 
-  /* Flag to do PanScan cropping while maintaining aspect-ratio for this
-   * pipeline */
-  bool do_pan_scan;
+  /* Preprocess geometry for inverse transform (populated per frame in pre_process) */
+  vart::InferResScaleInfo scale_info;
 
   /* Debug-specific file paths and stream (enabled with DUMP_INPUTS flag) */
 #ifdef DUMP_INPUTS
@@ -483,7 +482,8 @@ typedef struct {
   /* Condition variable and mutex for synchronization */
   std::mutex mtx;
   std::condition_variable cv;
-  bool thread_processed = false;
+  /* Number of pipeline pairs that completed processing in the current iteration. */
+  int notify_count = 0;
 
 } AppContext;
 

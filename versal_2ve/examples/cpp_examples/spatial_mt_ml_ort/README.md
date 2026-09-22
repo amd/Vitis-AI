@@ -85,8 +85,9 @@ labels, thresholds, decoder parameters) live under
   overlay, all within the same process.
 - **Flexible iteration count** — **`--runs`** drives repeated inference over
   the same input for throughput measurement.
-- **Optional benchmarking** — **`--benchmark`** times all pipeline stages
-  without writing output files.
+- **Optional benchmarking** — **`--benchmark`** reports a per-stage `Performance` table
+  (PreProcess, Inference, PostProcess, Overlay, Pipeline) with the average `Time` per
+  stage and the `Pipeline` throughput (FPS) for each pipeline, without writing output files.
 - **Tensor dumps** — **`--dump-all`** writes raw input/output tensors to the
   `output` directory for debugging.
 
@@ -202,12 +203,11 @@ make clean
 
 Before running the commands below, finish board setup for your platform, program the required PL and AI Engine overlay on the board, and configure the runtime environment for your image (including `LD_LIBRARY_PATH`).
 
-1. Copy the binary, config files, and labels to the target board:
+1. Copy the binary and config files to the target board. Class labels are not shipped next to the app; each model's JSON `label-file-path` points at the labels already installed under `/etc/vai/models/<model>/`.
 
 ```bash
 scp spatial_mt_ml_ort <TARGET>:/usr/bin/
 scp -r json_configs <TARGET>:/etc/vai/spatial_mt_ml_ort/
-scp -r labels <TARGET>:/etc/vai/spatial_mt_ml_ort/
 ```
 
 2. Run the application on the board with the default config:
@@ -236,36 +236,36 @@ xrt-smi examine --device 0 --report aie-partitions
 
 ```
 ---------------------------
-[0000:00:00.0] : Telluride
+[0000:00:00.0] : AMD Versal Prime Gen2
 ---------------------------
 AIE Partitions
-  Total Memory Usage: N/A
+  Total NPU Memory Usage: N/A
   Partition Index   : 0
     Columns: [0, 1, 2, 3]
     HW Contexts:
-      |PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
-      |Process Name        |Status     |Completions |Suspensions |     |GOPS     |
-      |Memory Usage        |Instr BO   |            |            |     |FPS      |
-      |                    |           |            |            |     |Latency  |
-      |====================|===========|============|============|=====|=========|
-      |1089                |1          |283         |0           |0    |Normal   |
-      |N/A                 |Active     |283         |0           |     |1        |
-      |54848 KB            |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
+      |PID                 |Ctx ID     |Submissions |Migrations  |Frame Evts |Err  |Priority |
+      |Process Name        |Status     |Completions |Suspensions |Layer Evts |     |GOPS     |
+      |NPU Memory Usage    |Instr BO   |            |            |           |     |FPS      |
+      |                    |           |            |            |           |     |Latency  |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1089                |1          |283         |0           |0          |0    |Normal   |
+      |N/A                 |Active     |283         |0           |0          |     |1        |
+      |54848 KB            |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
   Partition Index   : 1
     Columns: [4, 5, 6, 7]
     HW Contexts:
-      |PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
-      |Process Name        |Status     |Completions |Suspensions |     |GOPS     |
-      |Memory Usage        |Instr BO   |            |            |     |FPS      |
-      |                    |           |            |            |     |Latency  |
-      |====================|===========|============|============|=====|=========|
-      |1089                |2          |283         |0           |0    |Normal   |
-      |N/A                 |Active     |283         |0           |     |1        |
-      |54848 KB            |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
+      |PID                 |Ctx ID     |Submissions |Migrations  |Frame Evts |Err  |Priority |
+      |Process Name        |Status     |Completions |Suspensions |Layer Evts |     |GOPS     |
+      |NPU Memory Usage    |Instr BO   |            |            |           |     |FPS      |
+      |                    |           |            |            |           |     |Latency  |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1089                |2          |283         |0           |0          |0    |Normal   |
+      |N/A                 |Active     |283         |0           |0          |     |1        |
+      |54848 KB            |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
 ```
 
    The output confirms two active models under the same PID (1089) — Model 0 on

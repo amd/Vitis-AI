@@ -185,7 +185,7 @@ void trigger_pipeline_shutdown(AppContext* ctx, const std::string& reason) {
   // Phase 1: Stop FileReaders first (prevent new data from entering pipeline)
   APP_LOG(AppLogLevel::INFO, log_level, "Shutdown Phase 1: Stopping FileReaders...");
   for (auto& reader : ctx->file_readers) {
-    if (reader && reader->is_running()) {
+    if (reader) {
       reader->stop();
     }
   }
@@ -197,7 +197,7 @@ void trigger_pipeline_shutdown(AppContext* ctx, const std::string& reason) {
   // Phase 3: Stop preprocessing
   APP_LOG(AppLogLevel::INFO, log_level, "Shutdown Phase 3: Stopping Preprocessing...");
   for (auto& preproc : ctx->preprocess) {
-    if (preproc && preproc->is_running()) {
+    if (preproc) {
       preproc->stop();
     }
   }
@@ -205,7 +205,7 @@ void trigger_pipeline_shutdown(AppContext* ctx, const std::string& reason) {
   // Phase 4: Stop inference
   APP_LOG(AppLogLevel::INFO, log_level, "Shutdown Phase 4: Stopping Inference...");
   for (auto& inf : ctx->inference) {
-    if (inf && inf->is_running()) {
+    if (inf) {
       inf->stop();
     }
   }
@@ -213,7 +213,7 @@ void trigger_pipeline_shutdown(AppContext* ctx, const std::string& reason) {
   // Phase 5: Stop postprocess
   APP_LOG(AppLogLevel::INFO, log_level, "Shutdown Phase 5: Stopping PostProcess...");
   for (auto& post : ctx->postprocess) {
-    if (post && post->is_running()) {
+    if (post) {
       post->stop();
     }
   }

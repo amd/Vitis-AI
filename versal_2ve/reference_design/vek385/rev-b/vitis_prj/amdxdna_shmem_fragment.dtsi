@@ -1,0 +1,37 @@
+/* amdxdna-shmem overlay fragment -- appended to the decompiled x_plus_ml.dtbo
+ * (packager PL overlay) before it is recompiled, so the /amdxdna node ships
+ * inside the single platform overlay applied at boot. Uses manual __fixups__
+ * (placeholder 0xffffffff cells) resolved against base-DTB __symbols__.
+ *
+ * NOTE: the IPI mailbox (mboxes/mbox-names) is deliberately omitted for now.
+ * The multi-domain design uses the CED's own default IPI configuration
+ * (custom_sentrymode_pfm_bd.tcl's explicit IPI channel setup is disabled),
+ * which produces per-channel labels (ipi0..ipi6, ipi_nobuf1..5) instead of
+ * the paired "ipi_5_to_ipi_1" label the single-domain sentry designs used --
+ * confirmed against a real generated base devicetree, that label does not
+ * exist under CED defaults. Add mboxes/mbox-names + the matching __fixups__
+ * entry back once the correct ipiN channel for NPU/AIE firmware
+ * communication is confirmed.
+ */
+/ {
+	fragment@3 {
+		target-path = "/";
+		__overlay__ {
+			amdxdna-shmem {
+				compatible = "amd,versal-aie";
+				mboxes = <0xffffffff 0x00 0xffffffff 0x01>;
+				mbox-names = "tx\0rx";
+				memory-region = <0xffffffff 0xffffffff 0xffffffff 0xffffffff>;
+				memory-region-names = "mgmt\0doorbell\0app-bank0\0rpu-cma";
+			};
+		};
+	};
+
+	__fixups__ {
+		ipi_5_to_ipi_1 = "/fragment@3/__overlay__/amdxdna-shmem:mboxes:0\0/fragment@3/__overlay__/amdxdna-shmem:mboxes:8";
+		mgmt_shmem_vm0 = "/fragment@3/__overlay__/amdxdna-shmem:memory-region:0";
+		db_shmem_vm0 = "/fragment@3/__overlay__/amdxdna-shmem:memory-region:4";
+		app_bank0 = "/fragment@3/__overlay__/amdxdna-shmem:memory-region:8";
+		rpu_cma = "/fragment@3/__overlay__/amdxdna-shmem:memory-region:12";
+	};
+};

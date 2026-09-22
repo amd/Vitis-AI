@@ -14,13 +14,15 @@ Unless required by applicable law or agreed to in writing, software distributed 
 ```text
 examples/
 ├── README.md
-├── data/                          # IFM, JPEGs, test vectors for on-target use (see data/)
 ├── utilities/                     # Host-side helpers (e.g. jpeg_to_binary.py → IFM .bin; see utilities/)
 ├── tutorials/                     # Guided tutorials (see tutorials/)
 │   ├── cpu_subgraph/              # YOLOv7 CPU/NPU partition tutorial with in-graph NMS
 │   ├── resnet18_bf16/             # ResNet-18 BF16 flow
+│   ├── resnet50_bf16_cifar10/     # ResNet-50 CIFAR-10 BF16 flow
 │   ├── resnet50_quark/            # ResNet50 INT8 with AMD Quark
+│   ├── resnet50Cpp/               # ResNet50: compile then C++ ORT on target
 │   ├── yolov8m/                   # YOLOv8m detection: Quark VINT8, compile, ORT on target
+│   ├── yolox_nano_int8/           # YOLOX-Nano INT8 eval, compile, optional VART power app
 │   └── README.md
 ├── python_examples/               # Python ORT + VitisAI EP on the embedded target (see python_examples/)
 │   ├── run_ResNet50_vitisai.py
@@ -47,7 +49,7 @@ Per-app details live in each application **README** (see also **[cpp_examples](c
 
 The tables below are the reference overview:
 
-1. **Tutorials** under [`tutorials`](tutorials/) (host Docker + on-target ORT).
+1. **Tutorials** under [`tutorials`](tutorials/) (host Docker + compile; on-target ORT or VART-ML).
 2. **Python samples** for [`python_examples`](python_examples/) (ORT + VitisAI EP from Python).
 3. **Each Cpp app:** use case, runtime stack, flow type, and multi-model / AI Engine placement.
 4. **Vitis AI compiler feature** and which apps exercise it.
@@ -58,8 +60,11 @@ The tables below are the reference overview:
 |---------|----------|------|---------------|---------------|-------|--------------|
 | [`resnet18_bf16`](tutorials/resnet18_bf16/) | Python | ResNet-18: export ONNX → Vitis AI compile → deploy; `runmodel.py` compares CPU vs NPU (e.g. RMSE) | Yes (`compile.py` in Docker) | Yes (`runmodel.py` on board) | BF16 (compiler from FP32 ONNX) | ImageNet-style validation; ONNX under `models/` |
 | [`resnet50_quark`](tutorials/resnet50_quark/) | Python | ResNet50: Quark INT8 quant → compile → accuracy on CPU/NPU → on-target inference | Yes (`compile.py` in Docker) | Yes (`runmodel.py`; `runmodel_pre_cpu.py` for host checks) | INT8 (AMD Quark calibration) | ImageNet val / calibration JPEGs; ONNX under `models/` |
+| [`resnet50_bf16_cifar10`](tutorials/resnet50_bf16_cifar10/) | Python | CIFAR-10 fine-tuned ResNet-50: export ONNX, compile, classify on CPU/NPU | Yes (`compile.py` in Docker) | Yes (`runmodel.py` / `predict.py` on board) | BF16 (compiler from FP32 ONNX) | CIFAR-10; bundled weights under `models/` |
 | [`yolov8m`](tutorials/yolov8m/) | Python | YOLOv8m: Quark VINT8 (skip-nodes), compile, latency tuning, ORT EP on board | Yes (`compile.py` in Docker) | Yes (`run_inference.py` on board) | INT8 VINT8 + BF16 tail (per tutorial) | Calibration / val images; COCO-style labels |
 | [`cpu_subgraph`](tutorials/cpu_subgraph/) | Python and C++ | Heterogeneous NPU+CPU partitioned execution using VART-ML, demonstrated with YOLOv7 with in-graph NMS | Yes (`compile.py` in Docker) | No — VART-ML via `ml_vart` cpp application | INT8 + CPU FP32 tail (mixed execution) | COCO val images for calibration; test image + generated IFM/OFM binaries |
+| [`resnet50Cpp`](tutorials/resnet50Cpp/) | Python and C++ | ResNet50: download ONNX, compile, cross-compile `input.cpp`, run ORT C++ on the board | Yes (`compile.py` in Docker) | Yes (C++ ORT app, not `runmodel.py`) | FP32 ONNX compiled for NPU | HuggingFace ResNet50 ONNX; IFM `.bin` |
+| [`yolox_nano_int8`](tutorials/yolox_nano_int8/) | Python and C++ | YOLOX-Nano INT8: depthwise-to-regular Conv, COCO eval, compile; optional VART power profiling | Yes (`compile.py` in Docker) | Optional (`ml_vart_power` / ORT eval) | INT8 QDQ | COCO val2017; ONNX produced under `onnx_model/` |
 
 ### Python samples (`python_examples`)
 
@@ -105,7 +110,7 @@ The tables below are the reference overview:
 | **ORT + VitisAI EP** | ✓ | | ✓ | | ✓ | | | | |
 | **VART-ML runner** | | ✓ | | ✓ | | ✓ | ✓ | ✓ | ✓ |
 | **VART-X I/O pipeline** | | | ✓ | ✓ | ✓ | ✓ | | | |
-| **Infer-only flow** | ✓ | ✓ | | | | | ✓ | ✓ | |
+| **Infer-only flow** | ✓ | ✓ | | | | | ✓ | ✓ | ✓ |
 | **E2E vision flow** | | | ✓ | ✓ | ✓ | ✓ | | | |
 | **Multi-model (JSON)** | | | ✓ | ✓ | | | ✓ | ✓ | |
 | **Temporal sharing** | | | ✓ | ✓ | | | ✓ | ✓ | |
@@ -116,7 +121,7 @@ The tables below are the reference overview:
 | **Zero-copy / HW tensor** | | ✓ | | ✓ | | ✓ | | | |
 | **Mixed precision** | | ✓ | | ✓ | | | | | |
 | **CPU partition** | | ✓ | | | | | | | |
-| **Async inference API** | | ✓ | | | | | | | ✓ |
+| **Async inference API** | | | | | | | | | ✓ |
 
 #### Feature descriptions
 

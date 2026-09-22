@@ -68,6 +68,35 @@ static std::string build_shape_string(const std::vector<uint32_t>& shape) {
   return shape_str;
 }
 
+/*
+ * Convert the application MemoryLayout enum to the string representation
+ * expected by vart::TensorInfo::memory_layout (vart-x).
+ */
+static std::string memory_layout_to_string(MemoryLayout layout) {
+  switch (layout) {
+    case MemoryLayout::NHW:
+      return "NHW";
+    case MemoryLayout::NHWC:
+      return "NHWC";
+    case MemoryLayout::NCHW:
+      return "NCHW";
+    case MemoryLayout::NHWC4:
+      return "NHWC4";
+    case MemoryLayout::NC4HW4:
+      return "NC4HW4";
+    case MemoryLayout::NC8HW8:
+      return "NC8HW8";
+    case MemoryLayout::HCWNC4:
+      return "HCWNC4";
+    case MemoryLayout::HCWNC8:
+      return "HCWNC8";
+    case MemoryLayout::GENERIC:
+      return "GENERIC";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 static bool parse_scale_factors(const std::string& json_str, std::vector<float>& scale_factors) {
   try {
     pt::ptree config;
@@ -145,6 +174,7 @@ bool create_postprocess_context(PipelineContext* pipeline_ctx,
     std::string tensor_shape(build_shape_string(pipeline_ctx->model_info.in_tensors_info[i].meta.shape));
     APP_LOG(AppLogLevel::DEBUG, log_level, "Input Tensor%ld shape: %s", i, tensor_shape.c_str());
     tinfo.shape = pipeline_ctx->model_info.in_tensors_info[i].meta.shape;
+    tinfo.memory_layout = memory_layout_to_string(pipeline_ctx->model_info.in_tensors_info[i].meta.memory_layout);
 
     tinfo.data_type = map_data_type(pipeline_ctx->model_info.in_tensors_info[i].meta.data_type);
     if (TensorDataType::UNKNOWN == tinfo.data_type) {
@@ -169,6 +199,7 @@ bool create_postprocess_context(PipelineContext* pipeline_ctx,
     std::string tensor_shape(build_shape_string(pipeline_ctx->model_info.out_tensors_info[j].meta.shape));
     APP_LOG(AppLogLevel::DEBUG, log_level, "Output Tensor%ld shape: %s", j, tensor_shape.c_str());
     tinfo.shape = pipeline_ctx->model_info.out_tensors_info[j].meta.shape;
+    tinfo.memory_layout = memory_layout_to_string(pipeline_ctx->model_info.out_tensors_info[j].meta.memory_layout);
 
     tinfo.data_type = map_data_type(pipeline_ctx->model_info.out_tensors_info[j].meta.data_type);
     if (TensorDataType::UNKNOWN == tinfo.data_type) {

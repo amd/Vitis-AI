@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Vitis-AI Telluride <vaiml-build@example.com>
+Date: Thu, 16 Apr 2026 00:00:00 +0000
+Subject: [PATCH] xdna-driver: build/install full XRT tree on NPU path
+
+Two related changes to CMake/xrt.cmake (the AIE4/NPU branch). The
+AIE2/VE2 path goes through CMake/xrt_ve2.cmake and is unaffected.
+
+1) Drop src/runtime_src/core/tools from XRT_EXCLUDE_SUB_DIRECTORY.
+
+   That directory contains xbutil2, which the upstream CMakeLists.txt
+   renames to 'xrt-smi' at install time:
+
+       set(XBUTIL2_NAME "xrt-smi")
+
+   With it excluded, an NPU build of XRT silently produces no
+   /usr/bin/xrt-smi -- there is no way to query or validate the device
+   on the target. xbtracer and xbmgmt2 stay disabled via their own
+   gates (XRT_ENABLE_XBTRACER / XRT_XRT|XRT_ALVEO).
+
+2) Drop EXCLUDE_FROM_ALL from add_subdirectory(${XDNA_XRT_DIR}).
+
+   In CMake >= 3.28, EXCLUDE_FROM_ALL on a subdirectory excludes both
+   the targets from `make all` *and* their install() rules from
+   `cmake --install`. The result on AIE4 was that the only XRT
+   artifacts that ever landed in DESTDIR were the ones referenced by
+   the dev-convenience install() lines inside xdna-driver/src/shim/
+   itself:
+
+       image/usr/lib/libxrt_driver_xdna.so*       (canonical install)
+       image/bins/lib/libxrt_core.so*             (XDNA_BIN_DIR copy)
+       image/bins/lib/libxrt_coreutil.so*         (XDNA_BIN_DIR copy)
+       image/bins/lib/libxrt_driver_xdna.so*      (XDNA_BIN_DIR copy)
+
+   Everything that XRT itself installs -- ${libdir}/libxrt_core.so*,
+   ${libdir}/libxrt_coreutil.so*, /usr/bin/xrt-smi, /usr/include/xrt/*,
+   /usr/lib/pkgconfig/xrt.pc, cmake config files -- was missing.
+   Downstream recipes (e.g. vvas-core) then fail do_configure with
+   "Run-time dependency xrt found: NO (tried pkgconfig)".
+
+   The AIE2/VE2 wrapper (xrt_ve2.cmake) already uses a plain
+   add_subdirectory(...) with no EXCLUDE_FROM_ALL, which is why AIE2
+   builds have been producing the full XRT tree all along.
+---
+ CMake/xrt.cmake | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/CMake/xrt.cmake b/CMake/xrt.cmake
+--- a/CMake/xrt.cmake
++++ b/CMake/xrt.cmake
+@@ -5,15 +5,14 @@
+ set(XRT_EXCLUDE_SUB_DIRECTORY
+   src/runtime_src/core/pcie/emulation
+   src/runtime_src/core/pcie/windows
+   src/runtime_src/core/pcie/driver
+   src/runtime_src/core/pcie/tools
+   src/runtime_src/core/pcie/noop
+ 
+-  src/runtime_src/core/tools
+   src/runtime_src/core/edge
+ 
+   src/runtime_src/tools
+   src/runtime_src/xocl
+   src/runtime_src/ert
+   src/runtime_src/xrt
+ 
+@@ -36,4 +35,4 @@ set(XDNA_XRT_DIR xrt/src)
+ set(XRT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${XDNA_XRT_DIR}")
+ set(XRT_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/${XDNA_XRT_DIR}")
+ 
+-add_subdirectory(${XDNA_XRT_DIR} EXCLUDE_FROM_ALL)
++add_subdirectory(${XDNA_XRT_DIR})
+-- 
+2.34.1

@@ -1,0 +1,121 @@
+/* SV memory map (2026.1): protect RPU DDR from Linux + expose CMA/shmem pools */
+&{/reserved-memory} {
+	/* PLM/TF-A/RPU/CMA carveouts: vek385-revb-multidomain-memory-overlay.yaml */
+
+	/* Gap-fill: EDF ISP sparse layout holes in [0x0, 0x20000000) */
+	rpu_gap_isp_align0: rpu-gap@10829000 {
+		no-map;
+		reg = <0x00 0x10829000 0x00 0x1000>;
+	};
+
+	rpu_gap_isp_align1: rpu-gap@15053000 {
+		no-map;
+		reg = <0x00 0x15053000 0x00 0x1000>;
+	};
+
+	rpu_gap_isp_ddr: rpu-gap@1e4e8000 {
+		no-map;
+		reg = <0x00 0x1e4e8000 0x00 0x1b0f000>;
+	};
+
+	rpu_gap_isp_rpu8: rpu-gap@1987d000 {
+		no-map;
+		reg = <0x00 0x1987d000 0x00 0x1000>;
+	};
+
+	rpu_gap_isp_rpu9: rpu-gap@1e0a7000 {
+		no-map;
+		reg = <0x00 0x1e0a7000 0x00 0x1000>;
+	};
+
+	rpu_gap_isp_vring: rpu-gap@1ffff000 {
+		no-map;
+		reg = <0x00 0x1ffff000 0x00 0x1000>;
+	};
+
+	/* OCM shmem IPC (referenced by amdxdna-shmem overlay) */
+	mgmt_shmem_vm0: mgmt-shmem-vm0@bbe00000 {
+		no-map;
+		reg = <0x00 0xbbe00000 0x00 0x10000>;
+	};
+
+	db_shmem_vm0: doorbell-shmem-vm0@bbe10000 {
+		no-map;
+		reg = <0x00 0xbbe10000 0x00 0x8000>;
+	};
+
+	/* remoteproc5 - RPU-APP rsc-table + vrings + buffer (APU <-> RPU-APP RPMsg) */
+	rpu_app_rsctbl: rpu-app-rsctbl@bbf80000 {
+		no-map;
+		reg = <0x00 0xbbf80000 0x00 0x1000>;
+	};
+
+	rpu_app_vring0: vdev0vring0@bbf81000 {
+		no-map;
+		reg = <0x00 0xbbf81000 0x00 0x4000>;
+	};
+
+	rpu_app_vring1: vdev0vring1@bbf85000 {
+		no-map;
+		reg = <0x00 0xbbf85000 0x00 0x4000>;
+	};
+
+	rpu_app_vbuf: vdev0buffer@bbf89000 {
+		no-map;
+		compatible = "shared-dma-pool";
+		reg = <0x00 0xbbf89000 0x00 0x40000>;
+	};
+};
+
+/ {
+	/delete-node/ domains;
+	/delete-node/ remoteproc@eba00000;
+
+	/* remoteproc4: RPU-FW - Cluster A core 0 (boots from DDR 0x01800000) */
+	rpu_fw_cluster: remoteproc@eba00000 {
+		compatible = "xlnx,versal-net-r52fss";
+		#address-cells = <0x02>;
+		#size-cells = <0x02>;
+		xlnx,cluster-mode = <0x00>;
+		ranges = <0x00 0x00 0x00 0xeba00000 0x00 0x10000
+		          0x00 0x10000 0x00 0xeba10000 0x00 0x8000
+		          0x00 0x18000 0x00 0xeba20000 0x00 0x8000>;
+
+		r5f_0: r52f@0 {
+			compatible = "xlnx,versal2-r52f";
+			reg = <0x00 0x00 0x00 0x10000 0x00 0x10000 0x00 0x8000 0x00 0x18000 0x00 0x8000>;
+			reg-names = "r52_0a_atcm_global@eba00000\0r52_0a_btcm_global@eba10000\0r52_0a_ctcm_global@eba20000";
+			power-domains = <&versal2_firmware 0x181100bf>,
+			                <&versal2_firmware 0x183180cb>,
+			                <&versal2_firmware 0x183180cc>,
+			                <&versal2_firmware 0x183180cd>;
+			memory-region = <&rpu_fw_rsctbl>, <&rpu_fw_boot>;
+		};
+	};
+
+	/* remoteproc5: RPU-APP (zephyr) - Cluster A core 1 (r52_1a, eba40000) */
+	rpu_app_cluster: remoteproc@eba40000 {
+		compatible = "xlnx,versal-net-r52fss";
+		#address-cells = <0x02>;
+		#size-cells = <0x02>;
+		xlnx,cluster-mode = <0x00>;
+		ranges = <0x00 0x00 0x00 0xeba40000 0x00 0x10000
+		          0x00 0x10000 0x00 0xeba50000 0x00 0x8000
+		          0x00 0x18000 0x00 0xeba60000 0x00 0x8000>;
+
+		r5f_1: r52f@0 {
+			compatible = "xlnx,versal2-r52f";
+			reg = <0x00 0x00 0x00 0x10000 0x00 0x10000 0x00 0x8000 0x00 0x18000 0x00 0x8000>;
+			reg-names = "r52_1a_atcm_global@eba40000\0r52_1a_btcm_global@eba50000\0r52_1a_ctcm_global@eba60000";
+			power-domains = <&versal2_firmware 0x181100c0>,
+			                <&versal2_firmware 0x183180ce>,
+			                <&versal2_firmware 0x183180cf>,
+			                <&versal2_firmware 0x183180d0>;
+			memory-region = <&rpu_app_rsctbl>, <&rpu_app_vbuf>,
+			                <&rpu_app_vring0>, <&rpu_app_vring1>,
+			                <&rpu_app_boot>;
+			mboxes = <&ipi_5_to_ipi_2 0x00>, <&ipi_5_to_ipi_2 0x01>;
+			mbox-names = "tx", "rx";
+		};
+	};
+};

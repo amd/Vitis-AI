@@ -12,7 +12,7 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
 ## Introduction
 
-This document describes how to quantize, compile, and execute a mixed precision model (INT8 head, BF16/FP16 tail) using the `x_plus_ml_vart` application on AMD Versal™ AI Edge Series Gen 2 with Vitis AI 6.2.
+This document describes how to quantize, compile, and execute a mixed precision model (INT8 head, BF16/FP16 tail) using the `x_plus_ml_vart` application on AMD Versal™ AI Edge Series Gen 2 with Vitis AI 6.3.
 
 The workflow is as follows:
 
@@ -24,7 +24,7 @@ The workflow is as follows:
 
 The following software and hardware are required:
 
-- **Vitis AI 6.2 Docker for Versal AI Edge Series Gen 2** – for model quantization and compilation
+- **Vitis AI 6.3 Docker for Versal AI Edge Series Gen 2** – for model quantization and compilation
 - **Vitis AI SDK for Versal AI Edge Series Gen 2** – with `environment-setup` sourced
 - **VEK385 evaluation kit** – or another compatible Versal AI Edge Series Gen 2 target
 

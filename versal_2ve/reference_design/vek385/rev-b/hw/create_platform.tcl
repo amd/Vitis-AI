@@ -1,4 +1,6 @@
 set project_name $::env(PROJECT_NAME)
+set fmc_card $::env(FMC_CARD)
+set mipi $::env(MIPI)
 set pre_synth false
 
 # Create platform project
@@ -13,13 +15,68 @@ set_property platform.extensible true [current_project]
 set_property ip_repo_paths ./custom_ips [current_project]
 update_ip_catalog
 
+# Force a consistent simulation model for every cell in the design.
+# The added video subsystems (mipi_rx_ss_hier / hdmi_tx_ss_hier) instantiate
+# several NoC IPs (axi_noc2_*) that would otherwise default to rtl and make
+# validate_bd_design fail with "different Simulation Modes" (BD 41-2662).
+set_property preferred_sim_model tlm [current_project]
+
 # Import CED design and update it to add required custom changes
 create_bd_design "bd" -mode batch
-instantiate_example_design -template xilinx.com:design:versal_comn_platform:2.0 -design bd -options {Design_type.VALUE Extensible Include_AIE.VALUE true }
+instantiate_example_design -template xilinx.com:design:edf_base:1.0 -design bd
 update_compile_order -fileset sources_1
 
+source custom_pfm_ports_bd.tcl
 # Apply Vitis AI specific block design customizations (NoC, LPDDR5X, DDRMC5) on top of CED design
-source pfm_bd.tcl
+source custom_ddr_cfg_bd.tcl
+
+# Add RPU to AIE remap settings for 16 columns (sentry mode).
+# Only applied on the NPU firmware build (NPU_FW=1 in rev-b/build.cfg).
+if {[info exists ::env(NPU_FW)] && $::env(NPU_FW) eq "1"} {
+  source custom_sentrymode_pfm_bd.tcl
+}
+
+# ===========================================================================
+# Video pipeline (MIPI-RX capture + HDMI-TX display) integration
+#
+# The edf_base CED ships with example ISP_hier and VCU_hier subsystems that are
+# unused by this platform. They (and their Master_NoC INI connections) are
+# removed and replaced with the mipi_rx_ss_hier / hdmi_tx_ss_hier video
+# subsystems. The subsystem definitions are kept modular in dedicated Tcl files
+# (mipi_rx_ss_hier.tcl / hdmi_tx_ss_hier.tcl), mirroring the reference
+# vaiml_platform flow.
+#
+# NOTE: In the current edf_base design the AIE config NoC is named
+#       "AIE_ConfigNoc" (it was "ConfigNoc" in the older design).
+# ===========================================================================
+
+# --- Remove the unused ISP_hier / VCU_hier example subsystems --------------
+# ISP_hier is fed by Master_NoC M08/M09/M10, VCU_hier by Master_NoC M07.
+# Delete their interface nets first, then the hierarchies themselves. This only
+# frees the Master_NoC master INI ports previously driven by ISP/VCU; the base
+# Master_NoC configuration (NUM_NMI, PS-slave routing) is otherwise unchanged.
+# The freed M07/M08 ports are reused for the mipi loopback (M06 stays as base).
+foreach unused_net {Master_NoC_M07_INI Master_NoC_M08_INI Master_NoC_M09_INI Master_NoC_M10_INI} {
+  catch { delete_bd_objs [get_bd_intf_nets $unused_net] }
+}
+catch { delete_bd_objs [get_bd_cells ISP_hier] }
+catch { delete_bd_objs [get_bd_cells VCU_hier] }
+
+# --- Shared video infrastructure (NoC ports, reset, clocks, PS config) -----
+if {$mipi} {
+  source mipi_hdmi_common_infra_bd.tcl
+}
+
+# --- MIPI-RX capture subsystem (instantiation + connections) ---------------
+if {$mipi} {
+  source mipi_rx_ss_hier.tcl
+  create_hier_cell_mipi_rx_ss_hier / mipi_rx_ss_hier
+  source mipi_rx_ss_hier_connections.tcl
+}
+
+# Assign addresses for the newly added video subsystem and re-layout
+assign_bd_address
+regenerate_bd_layout
 
 # Source platform ports
 set_property platform.extensible true [current_project]
@@ -28,6 +85,9 @@ set_property PFM_NAME {amd:VEK385:telluride:0.0} [get_files [current_bd_design].
 
 # Constraining AIE NSU near to 0 to 3 columns
 source aie_constraints.tcl
+
+# Allow relaxed NoC solution during BD validation (before validate_bd_design)
+set_msg_config -suppress -id {Ipconfig 75-4216} -string {CRITICAL WARNING: [Ipconfig 75-4216] A NoC solution that meets the requested bandwidths could not be found}
 
 validate_bd_design
 save_bd_design
@@ -39,6 +99,8 @@ add_files -norecurse $project_name.srcs/sources_1/bd/bd/bd.bd
 # Ignore the CED’s imported golden NCR
 # Let Vivado generate a fresh NoC solution during impl_1 for the modified platform
 set_property NOC_SOLUTION_FILE "" [get_runs impl_1]
+# IMX728 4x4K raises NoC bandwidth; allow relaxed solution if exact BW unavailable
+set_msg_config -suppress -id {Ipconfig 75-4216} -string {CRITICAL WARNING: [Ipconfig 75-4216] A NoC solution that meets the requested bandwidths could not be found}
 
 #Overwrite the default rtl simulations models with tlm
 set_property preferred_sim_model "tlm" [current_project]
@@ -54,7 +116,6 @@ generate_target all [get_files $project_name.srcs/sources_1/bd/bd/bd.bd]
 set_property pfm_name {amd:vek385:example_design_pfm:0.0} [get_files -all $project_name.srcs/sources_1/bd/bd/bd.bd]
 set_property platform.vendor {amd} [current_project]
 set_property platform.name ${project_name}_pfm [current_project]
-
 # Pre_synth Platform Flow applicable for non-segmented designs
 if {$pre_synth} {
   puts "Generating the pre_synth xsa"

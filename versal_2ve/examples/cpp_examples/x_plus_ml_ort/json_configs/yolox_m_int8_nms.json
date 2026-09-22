@@ -7,7 +7,6 @@
     "scale-g": 1.0,
     "scale-b": 1.0,
     "colour-format": "RGBP_FLOAT",
-    "maintain-aspect-ratio": false,
     "resizing-type": "LETTERBOX",
     "in-mem-bank": 2,
     "out-mem-bank": 2
@@ -21,10 +20,10 @@
       }
     ],
     "execution-provider-options": {
-      "config_file": "/etc/vai/models/yolox_m_int8/vitisai_config.json",
+      "config-file": "/etc/vai/models/yolox_m_int8/vitisai_config.json",
       "target": "VAIML",
-      "cache_dir": "/etc/vai/models",
-      "cache_key": "yolox_m_int8"
+      "cache-dir": "/etc/vai/models",
+      "cache-key": "yolox_m_int8"
     }
   },
   "postprocess-config": {
@@ -52,13 +51,7 @@
       ],
       "num-anchorboxes" : [],
       "anchors": [],
-      "is-scaling-required" : "true",
-      "input-layout": [
-        "NCHW"
-      ],
-      "output-layout": [
-        "NHC"
-      ]
+      "is-scaling-required" : "true"
     }
   },
   "metaconvert-config": {

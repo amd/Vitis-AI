@@ -10,12 +10,12 @@
 #    - Ubuntu/Debian-based Linux system (kernel >= 3.2.0)
 #    - At least 50GB free disk space
 #    - Required files in the same directory as this script:
-#      * vitis_ai_2ve_sdk_v6.1.sh
-#      * vitis_ai_2ve_docker_6.1.tgz
-#      * vitis_ai_2ve_source_v6.1.tar
-#      * vitis_ai_2ve_prebuilt_boot_images_v6.1_RevA.tar (optional)
-#      * vitis_ai_2ve_prebuilt_boot_images_v6.1_RevB.tar (optional)
-#      Note: At least one boot images file (RevA or RevB) is required
+#      * vai6.3_vek385_sdk.sh
+#      * versal-2ve-release_v6.3_{RELEASE_DATE}.tgz
+#      * vai6.3_vek385_RevA_ai_ref_design_boot_images.tar (optional)
+#      * vai6.3_vek385_RevB_ai_ref_design_boot_images.tar (optional)
+#      * vai6.3_vek385_RevB_mipi_stream_ai_ref_design_boot_images.tar (optional)
+#      Note: At least one boot images file (RevA, RevB, or RevB MIPI) is required
 #
 # 2. Run the script:
 #    chmod +x host_setup
@@ -24,7 +24,7 @@
 # 3. What it does:
 #    - Installs git, docker.io, expect, pv (requires sudo)
 #    - Creates workspace at ~/vitis_ai_workspace
-#    - Extracts boot images and source code
+#    - Extracts boot images (RevA, RevB, or RevB MIPI)
 #    - Installs Vitis AI SDK to ~/.local/vitis-ai-sdk
 #    - Loads Docker development container
 #    - Generates helper scripts
@@ -75,7 +75,7 @@ DOWNLOAD_DIR="${DOWNLOAD_DIR:-${SCRIPT_DIR}}"
 
 # SDK Configuration
 SDK_VERSION=""  # Will be detected from available files
-MIN_SDK_VERSION="6.1"
+MIN_SDK_VERSION="6.3"
 SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-${HOME}/.local/vitis-ai-sdk}"
 SDK_DEFAULT_PARENT="${HOME}/.local"
 
@@ -83,17 +83,19 @@ SDK_DEFAULT_PARENT="${HOME}/.local"
 DOCKER_IMAGE_NAME="vitis_ai_2ve_docker"
 DOCKER_IMAGE_TAG=""  # Will be set based on detected version
 DOCKER_FULL_IMAGE=""  # Will be set based on detected version
+RELEASE_DATE=""  # Will be detected from the docker tarball filename
 
 # File Paths (relative to DOWNLOAD_DIR) - will be set after version detection
 SDK_INSTALLER=""
 DOCKER_IMAGE_FILE=""
-SOURCE_TAR=""
 BOOT_IMAGES_TAR_REVA=""
 BOOT_IMAGES_TAR_REVB=""
+BOOT_IMAGES_TAR_REVB_MIPI=""
 
 # Installation Options (defaults)
-INSTALL_SDK="${INSTALL_SDK:-N}"
-INSTALL_DOCKER="${INSTALL_DOCKER:-N}"
+# Empty defaults allow prompting user when files are present
+INSTALL_SDK="${INSTALL_SDK:-}"
+INSTALL_DOCKER="${INSTALL_DOCKER:-}"
 
 # System Requirements
 MIN_KERNEL_VERSION="3.2.0"
@@ -290,10 +292,9 @@ detect_version() {
     # Look for version in multiple file types
     local all_files=()
     local version_patterns=(
-        "vitis_ai_2ve_sdk_v*.sh"
-        "vitis_ai_2ve_docker_*.tgz"
-        "vitis_ai_2ve_source_v*.tar"
-        "vitis_ai_2ve_prebuilt_boot_images_v*_Rev*.tar"
+        "vai*_vek385_sdk.sh"
+        "versal-2ve-release_*.tgz"
+        "vai*_vek385_Rev*_ai_ref_design_boot_images.tar"
     )
     
     # Collect all matching files
@@ -313,16 +314,16 @@ detect_version() {
         local basename=$(basename "$file")
         
         # Try different version patterns
-        # Pattern 1: vitis_ai_2ve_sdk_v6.1.sh or vitis_ai_2ve_source_v6.1.tar
-        if [[ $basename =~ vitis_ai_2ve_(sdk|source)_v([0-9]+\.[0-9]+)\.(sh|tar) ]]; then
-            local ver="${BASH_REMATCH[2]}"
-            versions+=("$ver")
-        # Pattern 2: vitis_ai_2ve_docker_6.1.tgz
-        elif [[ $basename =~ vitis_ai_2ve_docker_([0-9]+\.[0-9]+)\.tgz ]]; then
+        # Pattern 1: vai6.3_vek385_sdk.sh
+        if [[ $basename =~ ^vai([0-9]+\.[0-9]+)_vek385_sdk\.sh$ ]]; then
             local ver="${BASH_REMATCH[1]}"
             versions+=("$ver")
-        # Pattern 3: vitis_ai_2ve_prebuilt_boot_images_v6.1_RevA.tar
-        elif [[ $basename =~ vitis_ai_2ve_prebuilt_boot_images_v([0-9]+\.[0-9]+)_Rev[AB]\.tar ]]; then
+        # Pattern 2: versal-2ve-release_v6.3_{RELEASE_DATE}.tgz
+        elif [[ $basename =~ ^versal-2ve-release_v?([0-9]+\.[0-9]+)_(.+)\.tgz$ ]]; then
+            local ver="${BASH_REMATCH[1]}"
+            versions+=("$ver")
+        # Pattern 3: vai6.3_vek385_RevA_ai_ref_design_boot_images.tar (RevA/RevB/RevB_mipi_stream)
+        elif [[ $basename =~ ^vai([0-9]+\.[0-9]+)_vek385_Rev(A|B)(_mipi_stream)?_ai_ref_design_boot_images\.tar$ ]]; then
             local ver="${BASH_REMATCH[1]}"
             versions+=("$ver")
         fi
@@ -341,24 +342,42 @@ detect_version() {
     fi
     
     success "Detected Vitis AI version: $SDK_VERSION"
-    
+
     # Set file paths based on detected version
-    SDK_INSTALLER="vitis_ai_2ve_sdk_v${SDK_VERSION}.sh"
-    DOCKER_IMAGE_FILE="vitis_ai_2ve_docker_${SDK_VERSION}.tgz"
-    SOURCE_TAR="vitis_ai_2ve_source_v${SDK_VERSION}.tar"
-    BOOT_IMAGES_TAR_REVA="vitis_ai_2ve_prebuilt_boot_images_v${SDK_VERSION}_RevA.tar"
-    BOOT_IMAGES_TAR_REVB="vitis_ai_2ve_prebuilt_boot_images_v${SDK_VERSION}_RevB.tar"
-    
-    # Set Docker tag based on version
+    SDK_INSTALLER="vai${SDK_VERSION}_vek385_sdk.sh"
+    BOOT_IMAGES_TAR_REVA="vai${SDK_VERSION}_vek385_RevA_ai_ref_design_boot_images.tar"
+    BOOT_IMAGES_TAR_REVB="vai${SDK_VERSION}_vek385_RevB_ai_ref_design_boot_images.tar"
+    BOOT_IMAGES_TAR_REVB_MIPI="vai${SDK_VERSION}_vek385_RevB_mipi_stream_ai_ref_design_boot_images.tar"
+
+    # Docker tarball now embeds a release date: versal-2ve-release_<version>_<release_date>.tgz
+    # Discover the actual file so we don't have to guess the release date.
+    local docker_matches=()
+    while IFS= read -r -d '' file; do
+        docker_matches+=("$file")
+    done < <(find "$DOWNLOAD_DIR" -maxdepth 1 \( -name "versal-2ve-release_${SDK_VERSION}_*.tgz" -o -name "versal-2ve-release_v${SDK_VERSION}_*.tgz" \) -print0 2>/dev/null)
+
+    if [ ${#docker_matches[@]} -gt 0 ]; then
+        # If more than one is present, pick the most recent (release date sorts lexically)
+        local docker_file
+        docker_file=$(printf '%s\n' "${docker_matches[@]}" | sort | tail -n1)
+        DOCKER_IMAGE_FILE=$(basename "$docker_file")
+
+        if [[ $DOCKER_IMAGE_FILE =~ ^versal-2ve-release_v?[0-9]+\.[0-9]+_(.+)\.tgz$ ]]; then
+            RELEASE_DATE="${BASH_REMATCH[1]}"
+        fi
+    else
+        DOCKER_IMAGE_FILE="versal-2ve-release_v${SDK_VERSION}_<RELEASE_DATE>.tgz"
+    fi
+
+    # Set Docker tag based on detected version and release date
     # Note: Docker tag format may vary, using a generic pattern
-    DOCKER_IMAGE_TAG="release_v${SDK_VERSION}_0206"
+    DOCKER_IMAGE_TAG="release_v${SDK_VERSION}_${RELEASE_DATE}"
     DOCKER_FULL_IMAGE="${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}"
-    
+
     info "Expected files based on detected version $SDK_VERSION:"
     info "  SDK: $SDK_INSTALLER"
     info "  Docker: $DOCKER_IMAGE_FILE"
-    info "  Source: $SOURCE_TAR"
-    info "  Boot Images: $BOOT_IMAGES_TAR_REVA / $BOOT_IMAGES_TAR_REVB"
+    info "  Boot Images: $BOOT_IMAGES_TAR_REVA / $BOOT_IMAGES_TAR_REVB / $BOOT_IMAGES_TAR_REVB_MIPI"
 }
 
 # ============================================================================
@@ -533,7 +552,7 @@ parse_args() {
 
 show_help() {
     cat << EOF
-Vitis AI 6.1 Host Environment Setup Script
+Vitis AI 6.3 Host Environment Setup Script
 
 Usage: $0 [OPTIONS]
 
@@ -550,7 +569,7 @@ This script performs the following:
   1. Validates system requirements
   2. Creates workspace directory structure
   3. Installs host packages (expect, etc.) via apt (requires sudo)
-  4. Extracts boot images and source code
+  4. Extracts boot images (RevA, RevB, or RevB MIPI)
   5. Installs Vitis AI SDK
   6. Checks for Vivado installation
   7. Loads Docker development container
@@ -654,19 +673,11 @@ preflight_validation() {
         INSTALL_DOCKER="N"
     fi
     
-    # Check for source tar (required)
-    local source_file="${DOWNLOAD_DIR}/${SOURCE_TAR}"
-    if [ -f "$source_file" ]; then
-        local size_mb=$(du -m "$source_file" | cut -f1)
-        success "Found source archive: $(basename "$source_file") (${size_mb} MB)"
-    else
-        error "Source archive not found: $(basename "$source_file") - This is required"
-    fi
-
     # Check for boot images - at least one revision required
     info "Checking boot images files..."
     local boot_images_reva="${DOWNLOAD_DIR}/${BOOT_IMAGES_TAR_REVA}"
     local boot_images_revb="${DOWNLOAD_DIR}/${BOOT_IMAGES_TAR_REVB}"
+    local boot_images_revb_mipi="${DOWNLOAD_DIR}/${BOOT_IMAGES_TAR_REVB_MIPI}"
     local found_boot_images=false
 
     if [ -f "$boot_images_reva" ]; then
@@ -685,8 +696,16 @@ preflight_validation() {
         info "Rev B boot images not found: $(basename "$boot_images_revb")"
     fi
 
+    if [ -f "$boot_images_revb_mipi" ]; then
+        local size_mb=$(du -m "$boot_images_revb_mipi" | cut -f1)
+        success "Found: $(basename "$boot_images_revb_mipi") (${size_mb} MB)"
+        found_boot_images=true
+    else
+        info "Rev B MIPI boot images not found: $(basename "$boot_images_revb_mipi")"
+    fi
+
     if [ "$found_boot_images" = false ]; then
-        error "At least one boot images file is required (Rev A or Rev B)"
+        error "At least one boot images file is required (Rev A, Rev B, or Rev B MIPI)"
     fi
 
     # Check disk space
@@ -714,19 +733,13 @@ preflight_validation() {
 setup_directories() {
     step "Setting up workspace directory structure"
 
-    if is_complete "SETUP_DIRECTORIES" && [ "$FORCE_REINSTALL" != "true" ]; then
-        info "Directories already set up, skipping..."
-        return 0
-    fi
-
-    # Create main workspace
+    # Create main workspace and subdirectories unconditionally (idempotent) so
+    # that a stale SETUP_DIRECTORIES=COMPLETE state (e.g. after the workspace
+    # was manually cleaned up) never leaves later steps writing into missing dirs.
     mkdir -p "$WORKSPACE_DIR"
-    info "Workspace: $WORKSPACE_DIR"
 
-    # Create subdirectories
     local subdirs=(
         "boot_images"
-        "source"
         "models"
         "docker_mounts"
         "logs"
@@ -735,7 +748,6 @@ setup_directories() {
 
     for subdir in "${subdirs[@]}"; do
         mkdir -p "${WORKSPACE_DIR}/${subdir}"
-        success "Created: ${WORKSPACE_DIR}/${subdir}"
     done
 
     # Set environment variables
@@ -745,6 +757,16 @@ setup_directories() {
 
     # Initialize logging
     init_logging
+
+    if is_complete "SETUP_DIRECTORIES" && [ "$FORCE_REINSTALL" != "true" ]; then
+        info "Directories already set up, skipping..."
+        return 0
+    fi
+
+    info "Workspace: $WORKSPACE_DIR"
+    for subdir in "${subdirs[@]}"; do
+        success "Created: ${WORKSPACE_DIR}/${subdir}"
+    done
 
     mark_complete "SETUP_DIRECTORIES"
 }
@@ -768,7 +790,7 @@ install_host_packages() {
         return 0
     fi
 
-    local packages=(git docker.io expect pv)
+    local packages=(git docker.io expect pv bmap-tools)
 
     info "The following packages will be installed via apt: ${packages[*]}"
     info "This step requires sudo privileges and will prompt for password"
@@ -848,58 +870,98 @@ extract_boot_images() {
 
     local boot_images_reva="${DOWNLOAD_DIR}/${BOOT_IMAGES_TAR_REVA}"
     local boot_images_revb="${DOWNLOAD_DIR}/${BOOT_IMAGES_TAR_REVB}"
+    local boot_images_revb_mipi="${DOWNLOAD_DIR}/${BOOT_IMAGES_TAR_REVB_MIPI}"
     local tar_file=""
     local revision=""
 
-    # Determine which boot images to install
-    if [ -f "$boot_images_reva" ] && [ -f "$boot_images_revb" ]; then
-        # Both available - ask user to choose
+    # Build the list of boot images actually present on disk
+    local available_keys=()
+    local available_files=()
+    local available_labels=()
+
+    if [ -f "$boot_images_reva" ]; then
+        available_keys+=("A")
+        available_files+=("$boot_images_reva")
+        available_labels+=("RevA")
+    fi
+    if [ -f "$boot_images_revb" ]; then
+        available_keys+=("B")
+        available_files+=("$boot_images_revb")
+        available_labels+=("RevB")
+    fi
+    if [ -f "$boot_images_revb_mipi" ]; then
+        available_keys+=("M")
+        available_files+=("$boot_images_revb_mipi")
+        available_labels+=("RevB_MIPI")
+    fi
+
+    if [ ${#available_keys[@]} -eq 0 ]; then
+        # None available - should not reach here due to preflight check
+        error "No boot images file found"
+    fi
+
+    if [ ${#available_keys[@]} -eq 1 ]; then
+        # Only one option available - use it directly
+        tar_file="${available_files[0]}"
+        revision="${available_labels[0]}"
+        info "Using $revision boot images (only option available)"
+    else
+        # Multiple available - prefer RevB, then RevB_MIPI, then RevA as the default
+        local default_key="${available_keys[0]}"
+        local k
+        for k in "${available_keys[@]}"; do
+            [ "$k" = "B" ] && default_key="B"
+        done
+        if [ "$default_key" != "B" ]; then
+            for k in "${available_keys[@]}"; do
+                [ "$k" = "M" ] && default_key="M"
+            done
+        fi
+
         if [ "$AUTO_MODE" = "true" ]; then
-            info "Both Rev A and Rev B boot images found"
-            info "Auto mode: Defaulting to Rev B"
-            tar_file="$boot_images_revb"
-            revision="RevB"
+            info "Multiple boot images found: ${available_labels[*]}"
+            info "Auto mode: Defaulting to revision '$default_key'"
         else
             echo ""
-            info "Both Rev A and Rev B boot images are available"
-            echo "  Rev A: $(basename "$boot_images_reva")"
-            echo "  Rev B: $(basename "$boot_images_revb")"
+            info "Multiple boot images are available:"
+            local i
+            for i in "${!available_keys[@]}"; do
+                echo "  ${available_keys[$i]}: ${available_labels[$i]} ($(basename "${available_files[$i]}"))"
+            done
             echo ""
 
             local choice
             while true; do
-                read -p "Select revision to install [A/B] (default: B): " choice
-                choice=${choice:-B}
-                case $choice in
-                    [Aa]* )
-                        tar_file="$boot_images_reva"
-                        revision="RevA"
+                read -p "Select revision to install [$(IFS=/; echo "${available_keys[*]}")] (default: ${default_key}): " choice
+                choice=${choice:-$default_key}
+                choice=$(echo "$choice" | tr '[:lower:]' '[:upper:]')
+
+                local matched=false
+                for i in "${!available_keys[@]}"; do
+                    if [ "${available_keys[$i]}" = "$choice" ]; then
+                        default_key="$choice"
+                        matched=true
                         break
-                        ;;
-                    [Bb]* )
-                        tar_file="$boot_images_revb"
-                        revision="RevB"
-                        break
-                        ;;
-                    * )
-                        echo "Please enter A or B"
-                        ;;
-                esac
+                    fi
+                done
+
+                if [ "$matched" = true ]; then
+                    break
+                else
+                    echo "Please enter one of: ${available_keys[*]}"
+                fi
             done
         fi
-    elif [ -f "$boot_images_reva" ]; then
-        # Only Rev A available
-        info "Using Rev A boot images"
-        tar_file="$boot_images_reva"
-        revision="RevA"
-    elif [ -f "$boot_images_revb" ]; then
-        # Only Rev B available
-        info "Using Rev B boot images"
-        tar_file="$boot_images_revb"
-        revision="RevB"
-    else
-        # Neither available - should not reach here due to preflight check
-        error "No boot images file found"
+
+        # Resolve the selected key to its file/label
+        local i
+        for i in "${!available_keys[@]}"; do
+            if [ "${available_keys[$i]}" = "$default_key" ]; then
+                tar_file="${available_files[$i]}"
+                revision="${available_labels[$i]}"
+                break
+            fi
+        done
     fi
 
     local target_dir="${WORKSPACE_DIR}/boot_images"
@@ -924,46 +986,21 @@ extract_boot_images() {
 }
 
 # ============================================================================
-# Extract Source Code
-# ============================================================================
-
-extract_source() {
-    step "Extracting source code"
-
-    if is_complete "EXTRACT_SOURCE" && [ "$FORCE_REINSTALL" != "true" ]; then
-        info "Source code already extracted, skipping..."
-        return 0
-    fi
-
-    local tar_file="${DOWNLOAD_DIR}/${SOURCE_TAR}"
-    local target_dir="${WORKSPACE_DIR}/source"
-
-    verify_file "$tar_file" "Source code archive"
-    check_disk_space 2 "$WORKSPACE_DIR"
-
-    # Clear target directory if forcing reinstall
-    if [ "$FORCE_REINSTALL" = "true" ] && [ -d "$target_dir" ]; then
-        warn "Removing existing source code..."
-        rm -rf "$target_dir"
-        mkdir -p "$target_dir"
-    fi
-
-    extract_tar "$tar_file" "$target_dir" 1
-
-    mark_complete "EXTRACT_SOURCE"
-}
-
-# ============================================================================
 # Install SDK
 # ============================================================================
 
 install_sdk() {
     step "Installing Vitis AI SDK"
-    
-    # Check if SDK installation is enabled
-    if [ "$INSTALL_SDK" != "Y" ] && [ "$INSTALL_SDK" != "y" ]; then
+
+    # Check if SDK installation is explicitly disabled
+    if [ "$INSTALL_SDK" = "N" ] || [ "$INSTALL_SDK" = "n" ]; then
         info "SDK installation disabled, skipping..."
         return 0
+    fi
+
+    # If not set and in AUTO_MODE, default to Y
+    if [ -z "$INSTALL_SDK" ] && [ "$AUTO_MODE" = "true" ]; then
+        INSTALL_SDK="Y"
     fi
 
     if is_complete "INSTALL_SDK" && [ "$FORCE_REINSTALL" != "true" ]; then
@@ -989,12 +1026,14 @@ install_sdk() {
         return 0
     fi
 
-    # Determine installation directory
-    if [ "$AUTO_MODE" != "true" ]; then
+    # Prompt user if not already decided
+    if [ -z "$INSTALL_SDK" ] && [ "$AUTO_MODE" != "true" ]; then
         echo ""
-        info "SDK will be installed to: $SDK_INSTALL_DIR"
-        if ! confirm "Proceed with SDK installation?" "y"; then
-            error "SDK installation cancelled by user"
+        info "SDK installer found: $installer"
+        info "Installation directory: $SDK_INSTALL_DIR"
+        if ! confirm "Install Vitis AI SDK?" "n"; then
+            info "Skipping SDK installation"
+            return 0
         fi
     fi
 
@@ -1197,11 +1236,16 @@ install_pv_locally() {
 
 load_docker_image() {
     step "Loading Docker development container"
-    
-    # Check if Docker installation is enabled
-    if [ "$INSTALL_DOCKER" != "Y" ] && [ "$INSTALL_DOCKER" != "y" ]; then
+
+    # Check if Docker installation is explicitly disabled
+    if [ "$INSTALL_DOCKER" = "N" ] || [ "$INSTALL_DOCKER" = "n" ]; then
         info "Docker installation disabled, skipping..."
         return 0
+    fi
+
+    # If not set and in AUTO_MODE, default to Y
+    if [ -z "$INSTALL_DOCKER" ] && [ "$AUTO_MODE" = "true" ]; then
+        INSTALL_DOCKER="Y"
     fi
 
     # Check if Docker is available
@@ -1234,9 +1278,10 @@ load_docker_image() {
     size_gb=$(du -BG "$image_file" | cut -f1 | sed 's/G//')
     info "Docker image size: ${size_gb}GB"
 
-    if [ "$AUTO_MODE" != "true" ]; then
-        if ! confirm "Load Docker image? (this will take several minutes)"; then
-            warn "Skipping Docker image load"
+    # Prompt user if not already decided
+    if [ -z "$INSTALL_DOCKER" ] && [ "$AUTO_MODE" != "true" ]; then
+        if ! confirm "Load Docker image? (this will take several minutes)" "n"; then
+            info "Skipping Docker image load"
             return 0
         fi
     fi
@@ -1251,28 +1296,36 @@ load_docker_image() {
         pv_cmd="${WORKSPACE_DIR}/bin/pv"
     fi
 
-    # Load image with progress bar if pv available
+    # Load image and capture the actual image name
+    local load_output
     if [ -n "$pv_cmd" ]; then
         info "Using pv for progress display"
         echo ""
-        "$pv_cmd" "$image_file" | docker load 2>&1 | tee -a "$LOG_FILE"
+        load_output=$("$pv_cmd" "$image_file" | docker load 2>&1 | tee -a "$LOG_FILE")
     else
         warn "pv not available - loading without progress bar"
         info "This will take 10-15 minutes with no visible progress"
         echo ""
-        docker load -i "$image_file" 2>&1 | tee -a "$LOG_FILE"
+        load_output=$(docker load -i "$image_file" 2>&1 | tee -a "$LOG_FILE")
     fi
 
-    # Verify image loaded
-    if docker_image_exists "$DOCKER_FULL_IMAGE"; then
-        log "Docker image loaded successfully"
-        success "Docker image loaded successfully"
-        docker images "$DOCKER_IMAGE_NAME"
+    # Extract the actual loaded image name from output (format: "Loaded image: <image_name>")
+    local loaded_image_name
+    loaded_image_name=$(echo "$load_output" | grep "Loaded image:" | sed 's/Loaded image: //')
+
+    if [ -n "$loaded_image_name" ]; then
+        log "Docker image loaded successfully: $loaded_image_name"
+        success "Docker image loaded: $loaded_image_name"
+
+        # Save the actual image name to state file for later reference
+        init_state_file
+        sed -i "/^DOCKER_IMAGE_NAME=/d" "$STATE_FILE" 2>/dev/null || true
+        echo "DOCKER_IMAGE_NAME=$loaded_image_name" >> "$STATE_FILE"
+
+        mark_complete "LOAD_DOCKER_IMAGE"
     else
-        error "Docker image verification failed"
+        error "Failed to load Docker image or could not determine image name"
     fi
-
-    mark_complete "LOAD_DOCKER_IMAGE"
 }
 
 # ============================================================================
@@ -1283,6 +1336,7 @@ generate_docker_script() {
     step "Generating Docker helper script"
 
     local script_path="${WORKSPACE_DIR}/scripts/run_vitis_docker.sh"
+    mkdir -p "${WORKSPACE_DIR}/scripts"
 
     # Detect license directory
     local license_dir=""
@@ -1386,7 +1440,6 @@ main() {
     install_host_packages       # apt install git, docker.io, expect, pv (requires sudo)
     setup_host_tools            # Must run before SDK (to avoid cross-compilation)
     extract_boot_images
-    extract_source
     install_sdk
     # check_vivado              # Vivado check disabled - not required
     load_docker_image
@@ -1405,18 +1458,40 @@ main() {
     echo "========================================"
     echo ""
     success "Workspace: $WORKSPACE_DIR"
-    success "SDK: $SDK_INSTALL_DIR"
-    if docker_image_exists "$DOCKER_FULL_IMAGE"; then
-        success "Docker: $DOCKER_FULL_IMAGE"
+
+    # Show SDK status
+    if is_complete "INSTALL_SDK"; then
+        success "SDK: $SDK_INSTALL_DIR"
     fi
+
+    # Show Docker status - read actual image name from state file
+    local docker_image_loaded=""
+    if is_complete "LOAD_DOCKER_IMAGE" && [ -f "$STATE_FILE" ]; then
+        docker_image_loaded=$(grep "^DOCKER_IMAGE_NAME=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2-)
+        if [ -n "$docker_image_loaded" ]; then
+            success "Docker: $docker_image_loaded"
+        fi
+    fi
+
     echo ""
     info "Total time: ${elapsed_min}m ${elapsed_sec}s"
     echo ""
 
-    # Next steps
-    print_next_steps \
-        "Source SDK environment: source ${SDK_INSTALL_DIR}/environment-setup-*" \
-        "Launch Docker container: ${WORKSPACE_DIR}/scripts/run_vitis_docker.sh"
+    # Build next steps array based on what was installed
+    local next_steps=()
+
+    if is_complete "INSTALL_SDK"; then
+        next_steps+=("Source SDK environment: source ${SDK_INSTALL_DIR}/environment-setup-*")
+    fi
+
+    if [ -n "$docker_image_loaded" ]; then
+        next_steps+=("Launch Docker container: ${WORKSPACE_DIR}/scripts/run_vitis_docker.sh")
+    fi
+
+    # Only show next steps if there are any
+    if [ ${#next_steps[@]} -gt 0 ]; then
+        print_next_steps "${next_steps[@]}"
+    fi
 
     echo ""
     info "Setup log: $LOG_FILE"

@@ -266,35 +266,39 @@ bool AppFileReader::start() {
   }
 }
 
-void AppFileReader::stop() {
-  APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] Stopping...", inst_name_.c_str());
+void AppFileReader::finish_output_queues() {
+  if (!output_queue_) {
+    return;
+  }
+  if (config_.bypass_preprocessing) {
+    static_cast<AppQueue<PreprocessedFrame>*>(output_queue_)->finish();
+  } else {
+    static_cast<AppQueue<InputFrame>*>(output_queue_)->finish();
+  }
+  if (postprocess_queue_) {
+    static_cast<AppQueue<InputFrame>*>(postprocess_queue_)->finish();
+  }
+}
 
-  // Signal shutdown if thread is RUNNING or has finished (IDLE)
+void AppFileReader::stop() {
   ThreadState current_state = state_.load();
   if (current_state == ThreadState::RUNNING || current_state == ThreadState::IDLE) {
-    // Signal shutdown (only meaningful if RUNNING)
+    APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] Stopping...", inst_name_.c_str());
     state_ = ThreadState::SHUTTING_DOWN;
-
-    // Notify output queue to wake up any waiting threads
-    if (output_queue_) {
-      if (config_.bypass_preprocessing) {
-        // Cast to PreprocessedFrame queue
-        auto* queue = static_cast<AppQueue<PreprocessedFrame>*>(output_queue_);
-        queue->finish();
-      } else {
-        // Cast to InputFrame queue
-        auto* queue = static_cast<AppQueue<InputFrame>*>(output_queue_);
-        queue->finish();
-      }
-    }
+    finish_output_queues();
+  } else if (worker_thread_ && worker_thread_->joinable()) {
+    // Worker left RUNNING on critical error; still wake threads blocked in push/pop()
+    finish_output_queues();
   }
 
   // Wait for thread to finish
   if (worker_thread_ && worker_thread_->joinable()) {
     worker_thread_->join();
+    APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] stopped", inst_name_.c_str());
   }
+  output_queue_ = nullptr;
+  postprocess_queue_ = nullptr;
   state_ = ThreadState::IDLE;
-  APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] stopped", inst_name_.c_str());
 }
 
 bool AppFileReader::should_continue_processing() const {
@@ -616,6 +620,11 @@ void AppFileReader::worker_thread_inference_input() {
                 "[%s] Submitted PreprocessedFrame %d (batch_size=%zu) to inference queue, total read: %lu",
                 inst_name_.c_str(), preprocessed_frame.frame_index, actual_batch_size, frames_read_.load());
       } else {
+        if (queue->is_finished() || state_.load() != ThreadState::RUNNING) {
+          APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] Output queue finished, exiting worker thread",
+                  inst_name_.c_str());
+          break;
+        }
         handle_queue_submission_failure();
         break;
       }
@@ -1020,6 +1029,11 @@ bool AppFileReader::submit_batch_to_queue(const InputFrame& batch, bool is_parti
   // Submit to single preprocessing queue
   auto* queue = static_cast<AppQueue<InputFrame>*>(output_queue_);
   if (!queue->push(batch, 0)) {
+    if (state_.load() != ThreadState::RUNNING) {
+      APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] Shutdown in progress, stopping submit",
+              inst_name_.c_str());
+      return true;  // shutdown, not a submission failure (same idea as Inference push-fail + RUNNING check)
+    }
     handle_queue_submission_failure();
     return false;
   }

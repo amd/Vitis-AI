@@ -128,7 +128,7 @@
         },
         {
             "id": 14,
-            "name": "[preemption] job: %u\n"
+            "name": "[yield] job: %u\n"
         },
         {
             "id": 15,
@@ -616,6 +616,34 @@
         },
         {
             "id": 136,
+            "name": "host queue version read, major: %d minor: %d\n"
+        },
+        {
+            "id": 137,
+            "name": "npi error caught\n"
+        },
+        {
+            "id": 138,
+            "name": "restore L2 done & load_last_pdi start\n"
+        },
+        {
+            "id": 139,
+            "name": "restore done\n"
+        },
+        {
+            "id": 140,
+            "name": "assert\n"
+        },
+        {
+            "id": 141,
+            "name": "load pdi done\n"
+        },
+        {
+            "id": 142,
+            "name": "load core elfs done\n"
+        },
+        {
+            "id": 143,
             "name": "\n"
         }
     ]

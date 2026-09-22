@@ -534,8 +534,14 @@ AppReadStatus read_input(PipelineContext* pipeline, AppLogLevel log_level, vart:
     height = pipeline->input_height;
 
     bytes_to_read = width * height * 3;
-    uint8_t* data_ptr = map_info->planes[0].data;
-    bytes = pipeline->input_file.read(reinterpret_cast<char*>(data_ptr), bytes_to_read).gcount();
+    /* Read line-by-line honoring the frame stride. The frame buffer may be
+     * allocated with a padded/aligned stride that is larger than width*3, so
+     * reading the whole image as one contiguous block would misalign every row
+     * and produce a skewed output image. */
+    for (size_t h = 0; h < height; h++) {
+      uint8_t* dst = map_info->planes[0].data + (h * map_info->planes[0].stride);
+      bytes += pipeline->input_file.read(reinterpret_cast<char*>(dst), width * 3).gcount();
+    }
 
     APP_LOG(AppLogLevel::DEBUG, log_level, "Read %lu bytes for plane 0 for BGR", bytes);
     if (bytes != bytes_to_read) {

@@ -9,10 +9,12 @@ Unless required by applicable law or agreed to in writing, software distributed 
 
 # Tools — Versal AI Edge Series Gen 2
 
-Host-side setup and VEK385 board preparation scripts for **Vitis AI 6.2** on the **AMD Versal AI Edge Series Gen 2**.
+Host-side setup and board preparation scripts for **Vitis AI 6.3** on the **AMD Versal AI Edge Series Gen 2** (VEK385).
 
 For **installation** and **board bringup** instructions, see the [Vitis AI documentation portal](https://vitisai.docs.amd.com/).
 
 ## Contents
 
 This folder contains helper scripts (`host_setup`, `ospi_sd_flash/`, and related utilities). Refer to the documentation portal above for when and how to use them.
+
+- `ospi_sd_flash/` — VEK385 OSPI and SD card flash (`vek385-flash-ospi.exp`, `vek385-flash-sdcard.sh`)

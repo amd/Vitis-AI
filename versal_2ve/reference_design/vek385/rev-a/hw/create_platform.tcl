@@ -15,16 +15,20 @@ update_ip_catalog
 
 # Import CED design and update it to add required custom changes
 create_bd_design "bd" -mode batch
-instantiate_example_design -template xilinx.com:design:versal_comn_platform:2.0 -design bd -options {Design_type.VALUE Extensible Include_AIE.VALUE true }
+instantiate_example_design -template xilinx.com:design:edf_base:1.0 -design bd
 update_compile_order -fileset sources_1
 
+source custom_pfm_ports_bd.tcl
 # Apply Vitis AI specific block design customizations (NoC, LPDDR5X, DDRMC5) on top of CED design
-source pfm_bd.tcl
+source custom_ddr_cfg_bd.tcl
 
 # Source platform ports
 set_property platform.extensible true [current_project]
 set_property platform.board_id  "vek385-reva" [current_project]
 set_property PFM_NAME {amd:VEK385:telluride:0.0} [get_files [current_bd_design].bd]
+
+# Constraining AIE NSU near to 0 to 3 columns
+source aie_constraints.tcl
 
 validate_bd_design
 save_bd_design
@@ -33,12 +37,15 @@ make_wrapper -files [get_files $project_name.srcs/sources_1/bd/bd/bd.bd] -top
 add_files -norecurse $project_name.gen/sources_1/bd/bd/hdl/bd_wrapper.v
 add_files -norecurse $project_name.srcs/sources_1/bd/bd/bd.bd
 
+# Ignore the CED’s imported golden NCR
+# Let Vivado generate a fresh NoC solution during impl_1 for the modified platform
 set_property NOC_SOLUTION_FILE "" [get_runs impl_1]
 
 #Overwrite the default rtl simulations models with tlm
 set_property preferred_sim_model "tlm" [current_project]
 update_compile_order -fileset sources_1
 
+#Assign all the addresses
 assign_bd_address
 
 ## Generate output products

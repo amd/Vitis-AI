@@ -1,0 +1,35 @@
+&{/reserved-memory} {
+
+    /* Reserved CMA memory regions for video capture (VCAP) pipeline.
+     * Each 256 MB region is dedicated to one of the 4 VCAP nodes, with each
+     * VCAP node handling streaming from a single camera sensor. The V4L2
+     * framework allocates buffers from these regions to store image data
+     * received from the ISP (Image Signal Processor) and preprocess IPs
+     * before passing frames to downstream consumers (e.g., display or AI
+     * inference engines). 256 MB supports 4K RGB buffers per pipeline.
+     */
+    cma_128m_0:video_cma_isp0_t0@50200000000 {
+        compatible = "shared-dma-pool";
+        reusable;
+        reg = <0x502 0x00000000 0x00 0x10000000>;
+    };
+
+    cma_128m_1:video_cma_isp1_t0@50210000000 {
+        compatible = "shared-dma-pool";
+        reusable;
+        reg = <0x502 0x10000000 0x00 0x10000000>;
+    };
+
+    cma_128m_2:video_cma_isp0_t1@50220000000 {
+        compatible = "shared-dma-pool";
+        reusable;
+        reg = <0x502 0x20000000 0x00 0x10000000>;
+    };
+
+    cma_128m_3:video_cma_isp1_t1@50230000000 {
+        compatible = "shared-dma-pool";
+        reusable;
+        reg = <0x502 0x30000000 0x00 0x10000000>;
+    };
+
+};

@@ -24,11 +24,11 @@ export PROJECT_NAME=example_design
 export BOARD=XIL_VEK385
 export CHIP_PART=xc2ve3858-ssva2112-2MP-e-S
 
-echo -e "\n # Hardware platform generation has started at: $(date '+%Y-%m-%d %H:%M:%S')"
-echo -e " Detailed Vivado logs are available at: ${ABS_PATH}/vivado.log"
-echo -e " Expected to take approximately 40 minutes to complete...\n"
-
+echo -e "\n # Hardware platform generation has started..."
+echo -e " Process started at: $(date '+%Y-%m-%d %H:%M:%S')"
+echo -e " Expected to take approximately 40 minutes to complete the build.\n"
+echo -e " Console logs are disabled for a better user experience."
+echo -e " Vivado execution steps are capturing in the log file ${ABS_PATH}/vivado.log"
 vivado -mode tcl -source create_platform.tcl >> $ABS_PATH/cmd.log
 if [ $? != 0 ]; then tail $ABS_PATH/cmd.log && exit 1; fi
-
-echo " # Hardware platform generation completed at: $(date '+%Y-%m-%d %H:%M:%S')"
+echo " # Hardware platform generation completed: $(date '+%Y-%m-%d %H:%M:%S')"

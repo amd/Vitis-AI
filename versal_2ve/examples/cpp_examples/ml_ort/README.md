@@ -131,7 +131,7 @@ The application supports two batch size modes depending on how the ONNX model wa
 
 **Static batch** - the batch dimension is fixed in the ONNX model's input shape (for example, `[6, 3, 224, 224]`). The app reads it directly from the model; no additional configuration is needed.
 
-**Dynamic batch** - the ONNX model has a dynamic batch dimension (`-1`, for example, `[-1, 3, 224, 224]`). The app cannot infer the intended batch size from the model alone, so it reads `dp_size` from the `vaiml_config` section of the VitisAI config JSON (the file referenced by `execution-provider-options.config_file` in the app config):
+**Dynamic batch** - the ONNX model has a dynamic batch dimension (`-1`, for example, `[-1, 3, 224, 224]`). The app cannot infer the intended batch size from the model alone, so it reads `dp_size` (Data Parallelism size - the number of HW instances the compiled model is replicated across and executed on in parallel) from the `vaiml_config` section of the VitisAI config JSON (the file referenced by `execution-provider-options.config-file` in the app config):
 
 ```json
 {
@@ -146,9 +146,11 @@ The application supports two batch size modes depending on how the ONNX model wa
 }
 ```
 
-If `dp_size` is absent (or unreadable), the app defaults to batch size `1`.
+If `dp_size` is absent (or unreadable), the app falls back to `device_batch_size`. If neither field is present (or readable), the app defaults to batch size `1`.
 
 For dynamic-batch models, the app pads partial input batches to the resolved batch size by repeating the last available sample. This keeps the dumped output tensor batch dimension aligned with the configured batch size.
+
+> **Note on `--benchmark` output:** the `Average Inference Time` row is reported as `ms/inference` - the average latency of one `Session::Run()` call, without a dp_size annotation. For a **dynamic-batch** model that call processes `dp_size` frames (the value resolved above); for a **static-batch** model it processes the model's own fixed batch dimension, which is not guaranteed to equal `dp_size`. In either case the VitisAI EP may internally execute a `Session::Run()` call as more than one `dp_size`-wide parallel execution, so the reported time intentionally does not claim to be "one dp_size execution" - it is the per-call latency for whatever batch that call was given.
 
 > **Note:** For batch processing, input IFMs for each tensor must be concatenated into a single input file in frame order.
 

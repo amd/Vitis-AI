@@ -26,6 +26,7 @@ CFLAGS+= -Wall -Wextra -Wpedantic -Wunused -Wformat -Wdeprecated -Wdisabled-opti
 CFLAGS+= `pkg-config --cflags opencv4`
 CFLAGS+= `pkg-config --cflags xrt`
 CFLAGS+= `pkg-config --cflags onnxruntime`
+CFLAGS+= `pkg-config --cflags vart-x`
 CFLAGS+= -I.
 CFLAGS+= -I../common/include
 

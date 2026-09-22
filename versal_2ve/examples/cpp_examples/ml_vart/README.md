@@ -72,7 +72,7 @@ The application accepts IFMs in binary format. Supported dtypes follow the compi
 
 Each file's size must be an exact multiple of that tensor's per-frame `size_in_bytes`.
 
-**Batch size:** the batch size (`N`) is fixed by the compiled model and cannot be changed at runtime. Query it with `--get-model-info <model-path>` (the `batch_size` field). The per-tensor `size_in_bytes` reported there is always **per frame**, not the total batch buffer.
+**Batch size:** the batch size (`N`) is fixed by the compiled model and cannot be changed at runtime. Query it with `--get-model-info <model-path>` (the `input_batch_size`/`output_batch_size` fields, queried per direction) - `ifms-config` batching (below) is always driven by `input_batch_size`. The per-tensor `size_in_bytes` reported there is always **per frame**, not the total batch buffer.
 
 **Batch composition:** for each inference call, the application takes `N` consecutive frames from every input file (the same frame index across all tensor files forms one batch element). All input files must therefore contain the same total number of frames; mismatched counts are rejected at startup.
 
@@ -154,6 +154,80 @@ ml_vart --get-model-info /etc/vai/models/resnet50_int8/resnet50_int8.rai
 
 The dumped `<model_basename>_info.json` mirrors the console summary in JSON format. The schema (example dump and field reference) and a console-output reference are documented in [Appendix: --get-model-info output formats](#appendix---get-model-info-output-formats).
 
+## Executing Models Containing CPU Subgraphs
+
+A Vitis AI–compiled model is not always executed entirely on the NPU. Some operations may be unsupported on (or better suited to) the CPU. The compiler places those operations in **CPU subgraphs** that run on the host CPU, while the rest of the model runs on the NPU. A single compiled model can therefore have a CPU subgraph at its **input** boundary, its **output** boundary, both, or neither.
+
+VART-ML executes these CPU subgraphs **internally, within the same `vart::Runner`** — no separate runner and no extra `execute()` call are required. The only requirement is that the application select the correct tensor *type* for each direction when the runner is created.
+
+### Tensor types: `CPU` vs `HW`
+
+For each direction (input and output) the runner can expose the tensors in one of two formats:
+
+| Type  | Format                                | Typical data type / layout |
+| ----- | ------------------------------------- | -------------------------- |
+| `HW`  | Hardware-native (NPU-accepted) format | e.g. BF16, HCWNC4 layout   |
+| `CPU` | Standard ONNX format                  | e.g. FP32, NCHW layout     |
+
+Use `ml_vart --get-model-info <model-path>` to inspect both views per tensor (see [Inspecting Model Metadata](#inspecting-model-metadata)). If a boundary has no HW view for a tensor, that boundary is a CPU subgraph and must be driven with the `CPU` type.
+
+Rules:
+
+- A boundary that is a **CPU subgraph** has **no HW tensor type** for that direction — it must use the `CPU` type. Creating the runner with `HW` for such a direction **fails**.
+- A boundary that is an **NPU (HW) subgraph** can use **either** `CPU` or `HW`.
+
+### Configuring the tensor type
+
+The tensor type is selected per direction through the `input-tensor-type` / `output-tensor-type` fields of `inference-config.runner-options`:
+
+| Field                 | Type   | Default | Values       | Description                               |
+| --------------------- | ------ | ------- | ------------ | ----------------------------------------- |
+| `input-tensor-type`   | String | `HW`    | `CPU` / `HW` | Type used for the model's input tensors.  |
+| `output-tensor-type`  | String | `HW`    | `CPU` / `HW` | Type used for the model's output tensors. |
+
+Per-tensor overrides are also supported via:
+
+- `input-tensor-type.<tensor_name>`
+- `output-tensor-type.<tensor_name>`
+
+where `<tensor_name>` must match the runner-reported tensor name from `--get-model-info`.
+
+Behaviour:
+
+- **Field not specified** → defaults to global (fully backward compatible).
+- **`CPU` / `HW`** (case-sensitive, uppercase) → used as given.
+- **Per-tensor override with unknown tensor name** → `create_runner()` fails. Tensor names must match the model's tensor names (use `--get-model-info` to discover them).
+
+Per-tensor overrides are passed to the runner during creation. The application then allocates `NpuTensor` objects matching each tensor's effective type and passes them to `execute()`. For example, if a tensor is overridden to `CPU`, a CPU `NpuTensor` is allocated and passed for that tensor. `--get-model-info` behavior is unaffected by per-tensor overrides.
+
+See [runner_options.md](../../docs/runner_options.md) for the full `runner-options` schema.
+
+> **Important:** When a direction uses the `CPU` type, the corresponding IFM / OFM binary files must be in standard **ONNX format** (matching the CPU tensor shapes and data types), not the HW-native layout. IFM file sizes are validated against the CPU tensor sizes during initialization.
+
+### Sample `config.json`
+
+The example below runs a model whose input boundary is a CPU subgraph (so it uses `input-tensor-type: "CPU"`) while its output stays on the NPU (`output-tensor-type: "HW"`):
+
+```json
+{
+  "inference-config": {
+    "model-file": "/etc/vai/models/modelA/modelA.rai",
+    "runner-options": {
+      "log-level": "WARNING",
+      "input-tensor-type": "CPU",
+      "output-tensor-type": "HW"
+    }
+  },
+  "ifms-config": [
+    {
+      "name": "input",
+      "file": "/etc/vai/models/modelA/data/ifm_input_fp32_1x3x224x224.bin"
+    }
+  ],
+  "ofms-dir": "output"
+}
+```
+
 ## Configuration JSON Guide
 For more detailed information about the JSON configuration schema, refer to [json_configs/README.md](json_configs/README.md).
 
@@ -173,7 +247,7 @@ For more detailed information about the JSON configuration schema, refer to [jso
 Conventions shared by both views:
 
 - Tensors appear in the order returned by `vart::Runner`. For each tensor the CPU view is emitted first, then the HW view when `vart::Runner` exposes it.
-- The reported per-tensor byte size is **per frame**; multiply by `batch_size` for a full-batch buffer.
+- The reported per-tensor byte size is **per frame**; multiply by `input_batch_size` for an input tensor's full-batch buffer, or `output_batch_size` for an output tensor's.
 - Quantization parameters (`scale`, `zero_point`) describe how integer tensor data maps to real-valued data.
 - For `GENERIC` memory layouts, see `memory_layout_order` for the dimension permutation.
 
@@ -187,7 +261,8 @@ Example (single-input, single-output classification model):
 
 --- Model info ---
 Model file        : /etc/vai/models/resnet50_int8/resnet50_int8.rai
-Batch size : 1
+Input batch size  : 1
+Output batch size : 1
   Inputs (1):
     [0] input
          cpu: shape=[1,3,224,224]  dtype=fp32  memory_layout=NCHW  size=602112B
@@ -208,7 +283,8 @@ Example (same model as above):
 ```json
 {
     "model_file": "/etc/vai/models/resnet50_int8/resnet50_int8.rai",
-    "batch_size": "1",
+    "input_batch_size": "1",
+    "output_batch_size": "1",
     "inputs": [
         {
             "name": "input",
@@ -282,7 +358,8 @@ Field reference (the `<view>` prefix below stands for either `cpu` or `hw`; CPU 
 | Field                          | Type             | Description                                                                                                                                              |
 | ------------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `model_file`                   | string           | The `<model-path>` passed on the command line (`.rai` file or compiled-model directory).                                                                |
-| `batch_size`                   | integer | Batch size fixed by the compiled model.                                                                                                                 |
+| `input_batch_size`             | integer | Input-side batch size fixed by the compiled model.                                                                                                       |
+| `output_batch_size`            | integer | Output-side batch size fixed by the compiled model.                                                                                                      |
 | `inputs[]` / `outputs[]`       | array            | One entry per tensor.                                                                                                                                    |
 | `inputs[].name` / `outputs[].name` | string       | `vart::Runner`-reported tensor name (same identifier for the CPU and HW views).                                                                          |
 | `<view>.shape`                 | array of int     | Tensor shape; element count and dimension semantics depend on `memory_layout`.                                                                          |

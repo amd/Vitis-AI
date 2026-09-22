@@ -106,6 +106,38 @@ The single main thread is a priority-based scheduler that drains completion queu
 
 The loop also enforces a **pipeline idle timeout**: if no frame completes for `pipeline_timeout_seconds` (`30s` in normal runs, `5s` when `--benchmark` is set), the loop logs `[WARNING] Application exited with N frames still in pipeline` and exits early. This timeout is the externally observable behaviour documented in [README.md](README.md) under "Additional Considerations". After the loop exits, the main thread calls `flush_pipeline()` (stops every component and drains residual frames) and then `destroy_all_context()` before returning.
 
+## Pipeline Shutdown
+
+Shutdown is a two-phase process: `flush_pipeline()` stops worker threads and drains in-flight work; `destroy_all_context()` then tears down component instances and memory pools.
+
+### flush_pipeline() — stop threads
+
+| Step | Action | Purpose |
+|------|--------|---------|
+| 1 | Stop file_readers | Halt producers; no new input frames |
+| 2 | Stop preprocess | Halt preprocessing workers |
+| 3 | Finish inference input queues | Signal inference that no more input is coming |
+| 4 | `drain_pipeline()` | Wait for in-flight frames to complete (up to idle timeout) |
+| 5 | Stop inference | Release pool-backed frames held by inference workers |
+| 6 | `discard_pending_pipeline_frames()` | **Forced shutdown only** (step 4 timed out): drop queued work from all pipeline AppQueues |
+| 7 | Finish inference output / original-frame queues | Allow postprocess to drain cleanly |
+| 8 | Stop postprocess | Halt postprocessing workers |
+
+### destroy_all_context() — release resources
+
+Called after `flush_pipeline()` on the normal exit path, or directly on initialization failures.
+
+| Step | Action | Purpose |
+|------|--------|---------|
+| 1 | `discard_pending_pipeline_frames()` | Return queued `Memory` / `VideoFrame` while owning pools are alive |
+| 2 | Clear inference instances | Destroy `MemoryBufferPool` output pools |
+| 3 | Clear postprocess instances | Release downstream holders |
+| 4 | Clear preprocess instances | Release preprocessing holders |
+| 5 | Clear all queue vectors | Drop queue containers; `preproc_inqs_vec` / `orig_frame_qs_vec` release remaining `VideoFrame` holders |
+| 6 | Clear file_readers | Destroy `VideoFramePool` / `tensor_pools_` last |
+
+`VideoFramePool` and `MemoryBufferPool` deleters capture shared pool State that outlives the pool object. If frames are still outstanding when a pool destructor runs, it waits up to 5s, then sets `alive=false` so remaining deleters destroy frames without recycling (no leak, no use-after-free). The teardown order above ensures pools are destroyed only after all `shared_ptr` holders are gone.
+
 ## Zero-Copy Support
 
 The application runs the model in zero-copy mode for both input and output tensors, meaning it directly uses hardware (HW) tensors. The `vart::Runner` is created with `input_tensor_type = "HW"` and `output_tensor_type = "HW"` (both hard-coded in `vart_context.cpp`). Zero-copy between Preprocess and Inference is therefore the default - provided that Preprocess emits the HW format expected by Inference. This is why `colour-format` in `preprocess-config` must match the model's `inputs->hw_format` from `flexmlrt-hsi.json` (see [json_configs/README.md](json_configs/README.md)). On the output side, the tensors from Inference stay in HW format and are handed directly to the postprocess stage when enabled.

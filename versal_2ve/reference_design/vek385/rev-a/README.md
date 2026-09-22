@@ -12,7 +12,7 @@ Unless required by applicable law or agreed to in writing, software distributed 
 ### Prerequisites
 Before building any of these sources, ensure the following environment is set:
 ```markdown
-- AMD Vivado and Vitis (version 2025.2) are installed
+- AMD Vivado and Vitis (version 2026.1) are installed
 - Required AR patches for Vivado and Vitis are applied
 - The system has a minimum of 100 GB free disk space (required for the Yocto build)
 - export YOCTO_TMP_DIR=<NFS mount path> Set this variable only if using an NFS-mounted path for Yocto builds

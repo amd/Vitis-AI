@@ -3,7 +3,7 @@ LICENSE = "CLOSED"
 
 S = "${WORKDIR}"
 LOCAL_DIR = "${WORKDIR}/wheels"
-PYPI_AMD_VAI_INDEX = "https://pypi.amd.com/vai/6.2/simple"
+PYPI_AMD_VAI_INDEX = "https://pypi.amd.com/vai/6.3/simple"
 VART_X_WHEEL_CACHE = "${DL_DIR}/vart-x-wheels"
 
 inherit python3native
@@ -45,37 +45,45 @@ do_configure() {
 }
 
 do_install() {
-  install -d ${D}${includedir}
-  install -d ${D}${libdir}
 
   ${STAGING_BINDIR_NATIVE}/unzip -q -o \
         ${WORKDIR}/wheels/vart_x*.whl -d ${WORKDIR}/
+# Install the wheel into rootfs site-packages (python3.X dir auto-selected via PYTHON_SITEPACKAGES_DIR).
+  install -d ${D}${PYTHON_SITEPACKAGES_DIR}
+  for whl in ${WORKDIR}/wheels/vart_x*.whl; do
+    bbnote "Installing wheel: $whl"
+    ${STAGING_BINDIR_NATIVE}/python3-native/python3 -m pip install --no-deps \
+      --prefix=${D}/usr "$whl"
+  done
 
-    # Find extracted package dir (handles vart_x / vart-x)
-    PKG_DIR=$(find ${WORKDIR} -maxdepth 2 -type d -name "vart_x" | head -1)
+  PKG_DIR="${D}${PYTHON_SITEPACKAGES_DIR}/vart_x"
+  if [ ! -d "$PKG_DIR" ]; then
+      bbfatal "vart_x package not found in site-packages after wheel install"
+  fi
 
-    if [ -z "$PKG_DIR" ]; then
-        bbfatal "Could not find vart package in extracted wheel"
+  # Labels go to /etc/vai/labels (referenced by post-process configs); drop the
+  # wheel copy to keep a single copy.
+  if [ -d "$PKG_DIR/labels" ]; then
+     install -d ${D}${sysconfdir}/vai/labels
+     cp -rf $PKG_DIR/labels/* ${D}${sysconfdir}/vai/labels/
+     rm -rf $PKG_DIR/labels
+  fi
+
+  # Symlink .pc onto the default pkg-config path (no PKG_CONFIG_PATH needed).
+  install -d ${D}${libdir}/pkgconfig
+  for pc in vart-x vvas-core; do
+    PC="$PKG_DIR/lib/pkgconfig/${pc}.pc"
+    if [ -f "$PC" ]; then
+      pc_rel=$(realpath -m --relative-to="${D}${libdir}/pkgconfig" "$PC")
+      ln -sf "$pc_rel" ${D}${libdir}/pkgconfig/${pc}.pc
     fi
-
-    bbnote "Using package dir: $PKG_DIR"
-
-    if [ -d "$PKG_DIR/include" ]; then
-        cp -r $PKG_DIR/include/* ${D}${includedir}/
-    fi
-
-    if [ -d "$PKG_DIR/lib" ]; then
-       cp -rf $PKG_DIR/lib/* ${D}${libdir}/
-    fi
+  done
 }
 
-# Runtime (rootfs)
 SOLIBS = ".so"
 FILES_SOLIBSDEV = ""
-INSANE_SKIP:${PN} += "dev-so"
-FILES:${PN} += "${libdir}/vart/*.so  ${libdir}/vvas_core/**"
-
-FILES:${PN}-dev += " ${includedir}/vart/* ${libdir}/pkgconfig/*.pc"
-
-# Skip minimal QA warnings if needed
-INSANE_SKIP:${PN} += "already-stripped"
+INSANE_SKIP:${PN} += "dev-so already-stripped"
+# Board + SDK: everything under site-packages (nothing in /usr); labels at /etc/vai.
+FILES:${PN} = "${PYTHON_SITEPACKAGES_DIR}/vart_x ${PYTHON_SITEPACKAGES_DIR}/vart_x-* ${sysconfdir}/vai/labels/**"
+# SDK only: expose the site-packages .pc on the default pkg-config search path.
+FILES:${PN}-dev += "${libdir}/pkgconfig/vart-x.pc ${libdir}/pkgconfig/vvas-core.pc"

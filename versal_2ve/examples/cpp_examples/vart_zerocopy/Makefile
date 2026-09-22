@@ -16,17 +16,21 @@
 
 .DEFAULT_GOAL:=all
 
+include ../common/vart-ml-version.mk
+
 check_dependencies:
 	@pkg-config --atleast-version=4.2.0 opencv4 || (echo "Error: opencv4 version 4.2.0 or later is required."; exit 1)
 	@pkg-config --atleast-version=2.6 xrt || (echo "Error: xrt version 2.6 or later is required."; exit 1)
 	@pkg-config --atleast-version=0.1 vart-x || (echo "Error: vart-x version 0.1 or later is required."; exit 1)
-	@pkg-config --atleast-version=0.1 vart-ml || (echo "Error: vart-ml version 0.1 or later is required."; exit 1)
+	@pkg-config --atleast-version=$(VART_ML_MIN_VERSION) vart-ml || (echo "Error: vart-ml version $(VART_ML_MIN_VERSION) or later is required."; exit 1)
 
 CFLAGS+= -Wall -Wextra -Wpedantic -Wunused -Wformat -Wdeprecated -Wdisabled-optimization -Wuninitialized -std=c++17
 CFLAGS+= `pkg-config --cflags opencv4`
 CFLAGS+= `pkg-config --cflags xrt`
 CFLAGS+= `pkg-config --cflags vart-ml`
+CFLAGS+= `pkg-config --cflags vart-x`
 CFLAGS+= -I.
+CFLAGS+= -I../common/include
 
 
 LDFLAGS+= `pkg-config --libs vart-x`

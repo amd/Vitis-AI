@@ -27,11 +27,275 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
+
+/* ============================ Performance reporting ============================
+ * Shared helpers for formatting numbers and rendering the "Performance" summary
+ * tables printed by the example applications. Consolidated here so the table
+ * layout and number formatting stay consistent across apps.
+ */
+
+/** A single metric/value pair for the two-column performance table. */
+struct PerfRow {
+  std::string metric;  ///< Metric name shown in the left column.
+  std::string value;   ///< Formatted metric value shown in the right column.
+};
+
+/** One benchmark entry for the labelled three-column performance table. */
+struct PerfEntry {
+  std::string label;           ///< Row label (e.g. pass or model name).
+  std::string inference_time;  ///< Formatted average inference time.
+  std::string throughput;      ///< Formatted average throughput.
+};
+
+/** Formats @p v with two decimal places and no unit (e.g. "12.34"). */
+inline std::string fmt2(double v) {
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2) << v;
+  return oss.str();
+}
+
+/**
+ * @brief Formats @p ms as a per-inference latency string (e.g. "12.34 ms/inference").
+ *
+ * Use this overload when the value being reported does not correspond to a single,
+ * well-defined Data Parallelism size (dp_size) - i.e. the number of HW instances the
+ * compiled model is replicated across and executed on in parallel (e.g. it aggregates
+ * concurrently-running models with different dp_size, or the underlying runtime may
+ * internally split one call into more than one dp_size-wide parallel execution) -
+ * annotating it with a dp_size would misrepresent what was actually measured.
+ */
+inline std::string fmt_ms_per_inference(double ms) {
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2) << ms << " ms/inference";
+  return oss.str();
+}
+
+/**
+ * @brief Formats @p ms as a per-inference latency string annotated with the Data
+ * Parallelism size (dp_size) that one inference call processes (e.g.
+ * "12.34 ms/inference (dp_size=4)").
+ *
+ * dp_size is the number of HW instances the compiled model is replicated across; one
+ * inference call runs the model in parallel on all dp_size instances simultaneously.
+ * Use this overload only when one measured inference call is known to correspond to
+ * exactly @p batch_size frames executed this way (e.g. one vart::Runner::execute()
+ * call, whose batch size always equals the compiled model's dp_size) - not when a
+ * runtime may internally loop over multiple dp_size-wide executions per call.
+ */
+inline std::string fmt_ms_per_inference(double ms, size_t batch_size) {
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2) << ms << " ms/inference (dp_size=" << batch_size << ")";
+  return oss.str();
+}
+
+/** Formats @p fps as a throughput string (e.g. "12.34 FPS"). */
+inline std::string fmt_fps(double fps) {
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2) << fps << " FPS";
+  return oss.str();
+}
+
+/**
+ * @brief Renders a two-column ("Metric" | "Value") performance table.
+ *
+ * Column widths auto-size to the widest header/cell, a centered "Performance"
+ * title spans both columns, and a dashed separator is drawn between rows.
+ *
+ * Example output:
+ * @verbatim
+ * +------------------------+--------------------------------+
+ * |                       Performance                       |
+ * +------------------------+--------------------------------+
+ * | Metric                 | Value                          |
+ * +------------------------+--------------------------------+
+ * | Average Inference Time | x.xx ms/inference (dp_size=N)  |
+ * |------------------------|--------------------------------|
+ * | Average Throughput     | xxx.xx FPS                     |
+ * +------------------------+--------------------------------+
+ * @endverbatim
+ *
+ * @param rows Metric/value pairs to display, one per table row.
+ */
+inline void print_perf_table(const std::vector<PerfRow>& rows) {
+  /* h_* = column header text; w_* = column display widths (grown to the widest
+   * header/cell so the columns line up); r = one metric/value row from rows. */
+  const std::string h_metric = "Metric";
+  const std::string h_value = "Value";
+  size_t w_metric = h_metric.size();
+  size_t w_value = h_value.size();
+  for (const auto& r : rows) {
+    if (r.metric.size() > w_metric) w_metric = r.metric.size();
+    if (r.value.size() > w_value) w_value = r.value.size();
+  }
+  const std::string sep_plus = "+-" + std::string(w_metric, '-') + "-+-" + std::string(w_value, '-') + "-+";
+  const std::string sep_pipe = "|-" + std::string(w_metric, '-') + "-|-" + std::string(w_value, '-') + "-|";
+  const std::string title = "Performance";
+  const size_t title_width = w_metric + w_value + 3;
+  const size_t left_pad = (title_width > title.size()) ? (title_width - title.size()) / 2 : 0;
+  const size_t right_pad = (title_width > title.size()) ? (title_width - title.size() - left_pad) : 0;
+  std::cout << sep_plus << "\n";
+  std::cout << "| " << std::string(left_pad, ' ') << title << std::string(right_pad, ' ') << " |\n";
+  std::cout << sep_plus << "\n";
+  std::cout << "| " << std::left << std::setw(w_metric) << h_metric << " | " << std::setw(w_value) << h_value
+            << " |\n";
+  std::cout << sep_plus << "\n";
+  for (size_t i = 0; i < rows.size(); ++i) {
+    std::cout << "| " << std::left << std::setw(w_metric) << rows[i].metric << " | " << std::setw(w_value)
+              << rows[i].value << " |\n";
+    if (i + 1 < rows.size()) {
+      std::cout << sep_pipe << "\n";
+    }
+  }
+  std::cout << sep_plus << std::endl;
+}
+
+/**
+ * @brief Renders an N-column performance table with a centered "Performance" title.
+ *
+ * Column widths auto-size to the widest header/cell.
+ *
+ * Example output (group_separators = true; a divider precedes each new group,
+ * i.e. each row whose first cell is non-empty). With group_separators = false the
+ * inter-group divider between the two model groups is omitted:
+ * @verbatim
+ * +---------+------------+---------------------------------+------------------+
+ * |                             Performance                                    |
+ * +---------+------------+---------------------------------+------------------+
+ * | Models  | Category   | Time                             | Throughput (FPS) |
+ * +---------+------------+---------------------------------+------------------+
+ * | Model x | PreProcess | x.xx ms/frame                    | -                |
+ * |         | Inference  | x.xx ms/inference (dp_size=N)    | -                |
+ * |         | Pipeline   | x.xx ms/frame                    | xxx.xx           |
+ * +---------+------------+---------------------------------+------------------+
+ * | Model x | PreProcess | x.xx ms/frame                    | -                |
+ * |         | Inference  | x.xx ms/inference (dp_size=N)    | -                |
+ * |         | Pipeline   | x.xx ms/frame                    | xxx.xx           |
+ * +---------+------------+---------------------------------+------------------+
+ * @endverbatim
+ *
+ * @note Pipeline throughput (FPS) = 1000 / pipeline_ms, i.e. one second
+ * (1000 ms) divided by the average time to process one frame, where
+ * pipeline_ms = PreProcess + Inference-per-frame + PostProcess (the enabled
+ * per-frame stage latencies added together). All apps use this sequential
+ * per-frame formula so the reported FPS is comparable across them.
+ *
+ * @param headers           Column headers; their count defines the column count.
+ * @param rows              Table rows; cells beyond the header count are ignored and
+ *                          missing trailing cells render as empty.
+ * @param group_separators  When true, a divider is drawn before each new group (a row
+ *                          whose first cell is non-empty, except the first row); when
+ *                          false, no inter-row dividers are drawn.
+ */
+inline void print_perf_table(const std::vector<std::string>& headers,
+                             const std::vector<std::vector<std::string>>& rows,
+                             bool group_separators = true) {
+  const size_t ncols = headers.size();
+  /* w[c] = display width of column c (grown to the widest header/cell in that column);
+   * c = column index; r = one table row (a vector of cell strings). */
+  std::vector<size_t> w(ncols, 0);
+  for (size_t c = 0; c < ncols; ++c) {
+    w[c] = headers[c].size();
+  }
+  for (const auto& r : rows) {
+    for (size_t c = 0; c < ncols && c < r.size(); ++c) {
+      if (r[c].size() > w[c]) w[c] = r[c].size();
+    }
+  }
+
+  std::string sep = "+";
+  for (size_t c = 0; c < ncols; ++c) {
+    sep += "-" + std::string(w[c], '-') + "-+";
+  }
+
+  size_t inner = (ncols > 0) ? (ncols - 1) * 3 : 0;  // " | " between columns
+  for (size_t c = 0; c < ncols; ++c) {
+    inner += w[c];
+  }
+  const std::string title = "Performance";
+  const size_t left_pad = (inner > title.size()) ? (inner - title.size()) / 2 : 0;
+  const size_t right_pad = (inner > title.size()) ? (inner - title.size() - left_pad) : 0;
+
+  auto print_row = [&](const std::vector<std::string>& cells) {
+    std::cout << "|";
+    for (size_t c = 0; c < ncols; ++c) {
+      std::cout << " " << std::left << std::setw(w[c]) << (c < cells.size() ? cells[c] : std::string()) << " |";
+    }
+    std::cout << "\n";
+  };
+
+  std::cout << sep << "\n";
+  std::cout << "| " << std::string(left_pad, ' ') << title << std::string(right_pad, ' ') << " |\n";
+  std::cout << sep << "\n";
+  print_row(headers);
+  std::cout << sep << "\n";
+  for (size_t r = 0; r < rows.size(); ++r) {
+    /* Draw a divider before each new group (a row whose first cell is non-empty), except the first. */
+    if (group_separators && r > 0 && !rows[r].empty() && !rows[r][0].empty()) {
+      std::cout << sep << "\n";
+    }
+    print_row(rows[r]);
+  }
+  std::cout << sep << std::endl;
+}
+
+/**
+ * @brief Renders a labelled three-column benchmark performance table.
+ *
+ * Columns are @p label_col, "Average Inference Time" and "Average Throughput",
+ * under a centered "Performance" title.
+ *
+ * Example output (label_col = "Model"):
+ * @verbatim
+ * +---------+---------------------------------+--------------------+
+ * |                       Performance                              |
+ * +---------+---------------------------------+--------------------+
+ * | Model   | Average Inference Time          | Average Throughput |
+ * +---------+---------------------------------+--------------------+
+ * | Model_x | x.xx ms/inference (dp_size=N)   | xxx.xx FPS         |
+ * | Model_x | x.xx ms/inference (dp_size=N)   | xxx.xx FPS         |
+ * +---------+---------------------------------+--------------------+
+ * @endverbatim
+ *
+ * @param label_col Header for the first (label) column.
+ * @param entries   Benchmark entries, one per table row.
+ */
+inline void print_perf_table(const std::string& label_col, const std::vector<PerfEntry>& entries) {
+  /* h_* = column header text; w_* = column display widths (grown to the widest
+   * header/cell so the columns line up); e = one benchmark entry from entries. */
+  const std::string h_inf = "Average Inference Time";
+  const std::string h_fps = "Average Throughput";
+  size_t w_label = label_col.size();
+  size_t w_inf = h_inf.size();
+  size_t w_fps = h_fps.size();
+  for (const auto& e : entries) {
+    if (e.label.size() > w_label) w_label = e.label.size();
+    if (e.inference_time.size() > w_inf) w_inf = e.inference_time.size();
+    if (e.throughput.size() > w_fps) w_fps = e.throughput.size();
+  }
+  const std::string sep = "+-" + std::string(w_label, '-') + "-+-" + std::string(w_inf, '-') + "-+-" +
+                          std::string(w_fps, '-') + "-+";
+  const std::string title = "Performance";
+  const size_t title_width = w_label + w_inf + w_fps + 6;
+  const size_t left_pad = (title_width > title.size()) ? (title_width - title.size()) / 2 : 0;
+  const size_t right_pad = (title_width > title.size()) ? (title_width - title.size() - left_pad) : 0;
+  std::cout << sep << "\n";
+  std::cout << "| " << std::string(left_pad, ' ') << title << std::string(right_pad, ' ') << " |\n";
+  std::cout << sep << "\n";
+  std::cout << "| " << std::left << std::setw(w_label) << label_col << " | " << std::setw(w_inf) << h_inf << " | "
+            << std::setw(w_fps) << h_fps << " |\n";
+  std::cout << sep << "\n";
+  for (const auto& e : entries) {
+    std::cout << "| " << std::left << std::setw(w_label) << e.label << " | " << std::setw(w_inf) << e.inference_time
+              << " | " << std::setw(w_fps) << e.throughput << " |\n";
+  }
+  std::cout << sep << std::endl;
+}
 
 /**
  * @brief Loads raw float data from a binary file into a vector.
@@ -314,6 +578,38 @@ inline std::string shape_to_string(const std::vector<int64_t>& shape) {
       oss << "x";
   }
   return oss.str();
+}
+
+/**
+ * @brief Sanitizes a tensor name so it can be used as a single filename
+ * component.
+ *
+ * Tensor names (e.g. for CPU-subgraph models) may contain path separators such
+ * as "/model/head/Conv_output_0". When appended to a std::filesystem::path
+ * these are interpreted as directory separators, causing file creation to fail
+ * because the intermediate directories do not exist. Other characters ('\\',
+ * '*', '?', '"', '<', '>', '|') and control characters are illegal or
+ * reserved on common filesystems and would also cause the file open to fail.
+ * Every such character is replaced with '-' and leading '-' characters are
+ * dropped so the result is a valid, flat filename fragment.
+ *
+ * @param tensor_name The raw tensor name.
+ * @return A filesystem-safe version of the tensor name.
+ */
+inline std::string sanitize_tensor_name(const std::string& tensor_name) {
+  std::string safe_name = tensor_name;
+  for (char& c : safe_name) {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    if (c == '/' || c == '\\' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' ||
+        uc < 0x20 /* control chars */) {
+      c = '-';
+    }
+  }
+  // Drop leading '-' (find_first_not_of returns npos when the name is empty or
+  // becomes all dashes, in which case nothing remains to keep).
+  const size_t first_keep = safe_name.find_first_not_of('-');
+  safe_name = (first_keep == std::string::npos) ? std::string() : safe_name.substr(first_keep);
+  return safe_name;
 }
 
 /**

@@ -29,6 +29,35 @@
 #include "common/memory_buffer_pool.hpp"
 
 #include <iostream>
+#include <utility>
+
+/** @brief Pool synchronization state shared by the pool object and deleters. */
+struct MemoryBufferPool::State {
+  std::queue<std::shared_ptr<vart::Memory>> free_buffers;
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::chrono::milliseconds timeout_duration;
+  bool stopping{false};
+  bool alive{true};
+  size_t outstanding{0};
+
+  /**
+   * @brief Return a buffer to the pool when alive; otherwise let the deleter destroy it.
+   *
+   * Acquirers and the destructor share this single CV. notify_one() is enough
+   * because the only waiter that can be "wrongly" woken is a shutdown-time
+   * acquirer, and that acquirer re-notifies before throwing (see acquire_buffer)
+   * so the wake propagates to the destructor.
+   */
+  void release_buffer(std::shared_ptr<vart::Memory> buffer) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (alive) {
+      free_buffers.push(std::move(buffer));
+      condition.notify_one();
+    }
+    --outstanding;
+  }
+};
 
 /** @brief Pre-allocate pool_size Memory buffers on the given device. */
 MemoryBufferPool::MemoryBufferPool(size_t pool_size,
@@ -37,79 +66,73 @@ MemoryBufferPool::MemoryBufferPool(size_t pool_size,
                                    uint8_t mbank_idx,
                                    std::shared_ptr<vart::Device> device,
                                    std::chrono::milliseconds timeout)
-    : timeout_duration_(timeout) {
+    : state_(std::make_shared<State>()) {
+  state_->timeout_duration = timeout;
   for (size_t i = 0; i < pool_size; ++i) {
     std::shared_ptr<vart::Memory> buffer;
     try {
       buffer = std::make_shared<vart::Memory>(type, buf_size, mbank_idx, device);
     } catch (std::exception& ex) {
       std::cerr << "failed to create Memory buffer. Reason: " << ex.what() << std::endl;
-      /* Re-throw the exception to indicate failure */
       throw;
     }
-    free_buffers_.push(buffer);
+    state_->free_buffers.push(std::move(buffer));
   }
 }
 
 MemoryBufferPool::~MemoryBufferPool() {
-  std::unique_lock<std::mutex> lock(mutex_);
-  stopping_ = true;
-  /* Wake every blocked acquirer so they can observe stopping_ and throw.
+  auto state = state_;
+  std::unique_lock<std::mutex> lock(state->mutex);
+  state->stopping = true;
+  /* Wake every blocked acquirer so they can observe stopping and throw.
    * Each woken acquirer re-notifies before throwing (see acquire_buffer),
    * so the wake is forwarded along the chain until it eventually reaches
    * the destructor or the chain runs out. */
-  condition_.notify_all();
+  state->condition.notify_all();
   /* Bounded drain: wait up to 5s for outstanding buffers to come back.
-   * If a caller leaks a shared_ptr we log loudly and proceed instead of
-   * deadlocking the destructor. */
-  if (!condition_.wait_for(lock, std::chrono::milliseconds(5000), [this] { return outstanding_ == 0; })) {
-    std::cerr << "MemoryBufferPool destroyed with " << outstanding_
-              << " buffer(s) still outstanding after 5s drain timeout" << std::endl;
+   * On timeout, set alive=false so remaining deleters destroy buffers
+   * without recycling instead of deadlocking or leaking. */
+  if (!state->condition.wait_for(lock, std::chrono::milliseconds(5000), [&] { return state->outstanding == 0; })) {
+    std::cerr << "MemoryBufferPool destroyed with " << state->outstanding
+              << " buffer(s) still outstanding after 5s drain timeout - releasing via deleters" << std::endl;
   }
+  state->alive = false;
 }
 
 /** @brief Acquire a buffer; blocks up to timeout_duration if pool is empty. */
 std::shared_ptr<vart::Memory> MemoryBufferPool::acquire_buffer() {
-  std::unique_lock<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(state_->mutex);
+  auto& state = state_;
 
-  if (!condition_.wait_for(lock, timeout_duration_, [this] { return !free_buffers_.empty() || stopping_; })) {
+  if (!state->condition.wait_for(lock, state->timeout_duration,
+                                 [&] { return !state->free_buffers.empty() || state->stopping; })) {
     throw std::runtime_error("Timeout waiting for a Memory buffer.");
   }
-  if (stopping_) {
+  if (state->stopping) {
     /* We were woken but are about to throw without consuming a buffer.
      * Forward the wake so the destructor (or another waiter) is not
      * left stranded on a single-CV lost-wakeup. */
-    condition_.notify_one();
+    state->condition.notify_one();
     throw std::runtime_error("MemoryBufferPool is shutting down.");
   }
 
-  std::shared_ptr<vart::Memory> buffer = free_buffers_.front();
-  free_buffers_.pop();
-  ++outstanding_;
+  std::shared_ptr<vart::Memory> buffer = std::move(state->free_buffers.front());
+  state->free_buffers.pop();
+  ++state->outstanding;
 
-  // Return a shared_ptr with custom deleter that releases back to pool
-  return std::shared_ptr<vart::Memory>(buffer.get(), [this, buffer](vart::Memory*) {
-    // When reference count goes to zero, release back to pool
-    this->release_buffer(buffer);
+  // Hoist raw pointer: arg evaluation order vs move-capture is unspecified (C++17).
+  vart::Memory* raw = buffer.get();
+  if (!raw) {
+    --state->outstanding;
+    throw std::runtime_error("MemoryBufferPool acquired an empty buffer slot.");
+  }
+  return std::shared_ptr<vart::Memory>(raw, [state, buffer = std::move(buffer)](vart::Memory*) mutable {
+    state->release_buffer(std::move(buffer));
   });
-}
-
-/** @brief Return a buffer to the pool and wake one waiter.
- *
- *  Acquirers and the destructor share this single CV. notify_one() is
- *  enough because the only waiter that can be "wrongly" woken is a
- *  shutdown-time acquirer, and that acquirer re-notifies before throwing
- *  (see acquire_buffer) so the wake propagates to the destructor.
- */
-void MemoryBufferPool::release_buffer(std::shared_ptr<vart::Memory> buffer) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  free_buffers_.push(buffer);
-  --outstanding_;
-  condition_.notify_one();
 }
 
 /** @brief Return the number of buffers currently available in the pool. */
 size_t MemoryBufferPool::get_available_count() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return free_buffers_.size();
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  return state_->free_buffers.size();
 }

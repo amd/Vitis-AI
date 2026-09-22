@@ -250,13 +250,13 @@ Batch size        : 1
 
   Outputs (1):
     [0] output
-         cpu: shape=[21600,7]  dtype=fp32  memory_layout=GENERIC(memory_layout_order=[0,1])  size=604800B
+         cpu: shape=[25200,7]  dtype=fp32  memory_layout=GENERIC(memory_layout_order=[0,1])  size=705600B
 ```
 
 Use this output to confirm:
 
 - Input tensor name is **`images`** — this must match the `ifms-config` entry in `app_config.json`.
-- Output shape is **`[21600, 7]`** — a fixed-capacity detection buffer with rows in **`[batch_id, x1, y1, x2, y2, class_id, confidence]`** format.
+- Output shape is **`[25200, 7]`** — a fixed-capacity detection buffer with rows in **`[batch_id, x1, y1, x2, y2, class_id, confidence]`** format.
   Valid rows are rows containing actual detections (not padded all-zero rows).
   Invalid rows are padded rows with all zeros, and they are ignored during postprocessing.
 - Only **`cpu`** tensor views are populated at both input and output boundaries (no `hw` view shown) — this indicates CPU subgraphs sit at both boundaries, so `input-tensor-type` and `output-tensor-type` must be set to `"CPU"` in `app_config.json`.
@@ -288,14 +288,14 @@ This step postprocesses the raw inference output: it filters valid detections fr
 
 ```bash
 python postprocess_bin_output.py \
-  --bin output_NPU/infer_out0-float32_21600x7_output.bin \
+  --bin output_NPU/infer_out0-float32_25200x7_output.bin \
   --image /etc/vai/models/yolox_m_int8/data/detections.jpg \
   --output output_cpusub.jpg
 ```
 
 > `output_NPU/` is the output directory set by `ofms-dir` in `app_config.json`. Use the same sample image path as Step 6, or substitute the path to your own image to annotate the original image.
 
-The raw inference output is a fixed tensor of shape `[21600, 7]` where each row represents one detection candidate:
+The raw inference output is a fixed tensor of shape `[25200, 7]` where each row represents one detection candidate:
 
 ```
 [batch_id, x1, y1, x2, y2, class_id, confidence]

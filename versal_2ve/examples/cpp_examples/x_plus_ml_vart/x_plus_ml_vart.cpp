@@ -28,81 +28,12 @@
 #include "common/app_utils.hpp"
 #include "x_plus_ml_app.hpp"
 
+#include <sstream>
+#include <vector>
+
 using namespace vart;
 
 namespace fs = std::filesystem;
-
-const char* to_string(vart::MemoryLayout l) {
-  switch (l) {
-    case vart::MemoryLayout::UNKNOWN:
-      return "UNKNOWN";
-    case vart::MemoryLayout::NC:
-      return "NC";
-    case vart::MemoryLayout::NCH:
-      return "NCH";
-    case vart::MemoryLayout::NHC:
-      return "NHC";
-    case vart::MemoryLayout::NHW:
-      return "NHW";
-    case vart::MemoryLayout::NHWC:
-      return "NHWC";
-    case vart::MemoryLayout::NCHW:
-      return "NCHW";
-    case vart::MemoryLayout::NHWC4:
-      return "NHWC4";
-    case vart::MemoryLayout::NHWC8:
-      return "NHWC8";
-    case vart::MemoryLayout::NC4HW4:
-      return "NC4HW4";
-    case vart::MemoryLayout::NC8HW8:
-      return "NC8HW8";
-    case vart::MemoryLayout::HCWNC4:
-      return "HCWNC4";
-    case vart::MemoryLayout::HCWNC8:
-      return "HCWNC8";
-    case vart::MemoryLayout::HCWNC16:
-      return "HCWNC16";
-    case vart::MemoryLayout::NHW16C4WC:
-      return "NHW16C4WC";
-    case vart::MemoryLayout::GENERIC:
-      return "GENERIC";
-    default:
-      return "?";
-  }
-}
-
-const char* to_string(vart::DataType d) {
-  switch (d) {
-    case vart::DataType::UNKNOWN:
-      return "UNKNOWN";
-    case vart::DataType::BOOLEAN:
-      return "BOOLEAN";
-    case vart::DataType::INT8:
-      return "INT8";
-    case vart::DataType::UINT8:
-      return "UINT8";
-    case vart::DataType::INT16:
-      return "INT16";
-    case vart::DataType::UINT16:
-      return "UINT16";
-    case vart::DataType::BF16:
-      return "BF16";
-    case vart::DataType::FP16:
-      return "FP16";
-    case vart::DataType::INT32:
-      return "INT32";
-    case vart::DataType::UINT32:
-      return "UINT32";
-    case vart::DataType::FLOAT32:
-      return "FLOAT32";
-    case vart::DataType::INT64:
-      return "INT64";
-    case vart::DataType::UINT64:
-      return "UINT64";
-    default:
-      return "?";
-  }
-}
 
 const char* to_string(vart::VideoFormat f) {
   switch (f) {
@@ -124,6 +55,8 @@ const char* to_string(vart::VideoFormat f) {
       return "RGBP_FLOAT";
     case vart::VideoFormat::RGBP:
       return "RGBP";
+    case vart::VideoFormat::BGRP:
+      return "BGRP";
     case vart::VideoFormat::RGBx_BF16:
       return "RGBX_BF16";
     case vart::VideoFormat::RGBx_FP16:
@@ -136,12 +69,22 @@ const char* to_string(vart::VideoFormat f) {
       return "BGRX_FP16";
     case vart::VideoFormat::RGBP_BF16:
       return "RGBP_BF16";
+    case vart::VideoFormat::BGRP_BF16:
+      return "BGRP_BF16";
     case vart::VideoFormat::RGBP_FP16:
       return "RGBP_FP16";
+    case vart::VideoFormat::BGRP_FP16:
+      return "BGRP_FP16";
     case vart::VideoFormat::RGB_BF16:
       return "RGB_BF16";
     case vart::VideoFormat::RGB_FP16:
       return "RGB_FP16";
+    case vart::VideoFormat::BGR_BF16:
+      return "BGR_BF16";
+    case vart::VideoFormat::BGR_FP16:
+      return "BGR_FP16";
+    case vart::VideoFormat::BGRP_FLOAT:
+      return "BGRP_FLOAT";
     default:
       return "?";
   }
@@ -173,9 +116,15 @@ string get_colour_space(vart::VideoFormat fmt) {
 
     case vart::VideoFormat::BGRx:
     case vart::VideoFormat::BGR:
+    case vart::VideoFormat::BGRP:
     case vart::VideoFormat::BGR_FLOAT:
+    case vart::VideoFormat::BGRP_FLOAT:
     case vart::VideoFormat::BGRx_BF16:
+    case vart::VideoFormat::BGRP_BF16:
     case vart::VideoFormat::BGRx_FP16:
+    case vart::VideoFormat::BGRP_FP16:
+    case vart::VideoFormat::BGR_BF16:
+    case vart::VideoFormat::BGR_FP16:
       return "BGR";
 
     default:
@@ -202,15 +151,21 @@ vart::VideoFormat get_vart_video_format(const string& fmt) {
       {"BGR_FLOAT", vart::VideoFormat::BGR_FLOAT},
       {"RGBP_FLOAT", vart::VideoFormat::RGBP_FLOAT},
       {"RGBP", vart::VideoFormat::RGBP},
+      {"BGRP", vart::VideoFormat::BGRP},
       {"RGBX_BF16", vart::VideoFormat::RGBx_BF16},
       {"RGBX_FP16", vart::VideoFormat::RGBx_FP16},
       {"RGB_FLOAT", vart::VideoFormat::RGB_FLOAT},
+      {"BGRP_FLOAT", vart::VideoFormat::BGRP_FLOAT},
       {"BGRX_BF16", vart::VideoFormat::BGRx_BF16},
       {"BGRX_FP16", vart::VideoFormat::BGRx_FP16},
       {"RGBP_BF16", vart::VideoFormat::RGBP_BF16},
       {"RGBP_FP16", vart::VideoFormat::RGBP_FP16},
+      {"BGRP_BF16", vart::VideoFormat::BGRP_BF16},
+      {"BGRP_FP16", vart::VideoFormat::BGRP_FP16},
       {"RGB_BF16", vart::VideoFormat::RGB_BF16},
-      {"RGB_FP16", vart::VideoFormat::RGB_FP16}};
+      {"RGB_FP16", vart::VideoFormat::RGB_FP16},
+      {"BGR_BF16", vart::VideoFormat::BGR_BF16},
+      {"BGR_FP16", vart::VideoFormat::BGR_FP16}};
 
   auto it = format_map.find(fmt);
   return (it != format_map.end()) ? it->second : vart::VideoFormat::UNKNOWN;
@@ -303,68 +258,164 @@ bool infer_generic_preprocess_layout(const vart::NpuTensorInfo& tensor,
  * @param colour_space  Simple colour-space string ("RGB" or "BGR").
  * @param layout        MemoryLayout of the first input tensor reported by the inference runner.
  * @param dtype         DataType of the first input tensor reported by the inference runner.
+ * @param shape         Full tensor shape metadata.
  * @return Corresponding vart::VideoFormat, or VideoFormat::UNKNOWN on unsupported combination.
  */
 vart::VideoFormat derive_vart_video_format(const string& colour_space,
                                            vart::MemoryLayout layout,
-                                           vart::DataType dtype) {
+                                           vart::DataType dtype,
+                                           const std::vector<uint32_t>& shape) {
   using VF = vart::VideoFormat;
   using ML = vart::MemoryLayout;
   using DT = vart::DataType;
 
+  VF result = VF::UNKNOWN;
+
   bool is_rgb = (colour_space == "RGB");
   bool is_bgr = (colour_space == "BGR");
+  /* Reject anything that isn't a recognised colour space. */
   if (!is_rgb && !is_bgr) {
     return VF::UNKNOWN;
   }
 
   switch (layout) {
-    case ML::HCWNC4:
+    case ML::HCWNC4: {
       switch (dtype) {
         case DT::INT8:
-        case DT::UINT8:
-          return is_rgb ? VF::RGBx : VF::BGRx;
-        case DT::BF16:
-          return is_rgb ? VF::RGBx_BF16 : VF::BGRx_BF16;
-        case DT::FP16:
-          return is_rgb ? VF::RGBx_FP16 : VF::BGRx_FP16;
-        default:
-          return VF::UNKNOWN;
+        case DT::UINT8: {
+          result = is_rgb ? VF::RGBx : VF::BGRx;
+          break;
+        }
+        case DT::BF16: {
+          result = is_rgb ? VF::RGBx_BF16 : VF::BGRx_BF16;
+          break;
+        }
+        case DT::FP16: {
+          result = is_rgb ? VF::RGBx_FP16 : VF::BGRx_FP16;
+          break;
+        }
+        default: {
+          result = VF::UNKNOWN;
+          break;
+        }
       }
+      break;
+    }
 
-    case ML::NCHW:
+    case ML::NCHW: {
+      /* NCHW policy: support only C=3 (planar RGB/BGR). */
+      /* Check the size of the shape. */
+      if (shape.size() < 4) {
+        result = VF::UNKNOWN;
+        break;
+      }
+      uint32_t channel_count = shape[1];
       switch (dtype) {
         case DT::INT8:
-        case DT::UINT8:
-          return VF::RGBP;
-        case DT::FLOAT32:
-          return VF::RGBP_FLOAT;
-        case DT::BF16:
-          return VF::RGBP_BF16;
-        case DT::FP16:
-          return VF::RGBP_FP16;
-        default:
-          return VF::UNKNOWN;
+        case DT::UINT8: {
+          if (channel_count == 3) {
+            result = is_rgb ? VF::RGBP : VF::BGRP;
+          } else {
+            result = VF::UNKNOWN;
+          }
+          break;
+        }
+        case DT::FLOAT32: {
+          if (channel_count == 3) {
+            result = is_rgb ? VF::RGBP_FLOAT : VF::BGRP_FLOAT;
+          } else {
+            result = VF::UNKNOWN;
+          }
+          break;
+        }
+        case DT::BF16: {
+          if (channel_count == 3) {
+            result = is_rgb ? VF::RGBP_BF16 : VF::BGRP_BF16;
+          } else {
+            result = VF::UNKNOWN;
+          }
+          break;
+        }
+        case DT::FP16: {
+          if (channel_count == 3) {
+            result = is_rgb ? VF::RGBP_FP16 : VF::BGRP_FP16;
+          } else {
+            result = VF::UNKNOWN;
+          }
+          break;
+        }
+        default: {
+          result = VF::UNKNOWN;
+          break;
+        }
       }
+      break;
+    }
 
-    case ML::NHWC:
+    case ML::NHWC: {
+      /* NHWC policy: support C=3 (RGB/BGR) and C=4 (RGBx/BGRx where supported). */
+      /* Check the size of the shape. */
+      if (shape.size() < 4) {
+        result = VF::UNKNOWN;
+        break;
+      }
+      uint32_t channel_count = shape[3];
       switch (dtype) {
         case DT::INT8:
-        case DT::UINT8:
-          return is_rgb ? VF::RGB : VF::BGR;
-        case DT::FLOAT32:
-          return is_rgb ? VF::RGB_FLOAT : VF::BGR_FLOAT;
-        case DT::BF16:
-          return is_rgb ? VF::RGB_BF16 : VF::BGR_BF16;
-        case DT::FP16:
-          return is_rgb ? VF::RGB_FP16 : VF::BGR_FP16;
-        default:
-          return VF::UNKNOWN;
+        case DT::UINT8: {
+          if (channel_count == 3) {
+            result = is_rgb ? VF::RGB : VF::BGR;
+          } else if (channel_count == 4) {
+            result = is_rgb ? VF::RGBx : VF::BGRx;
+          } else {
+            result = VF::UNKNOWN;
+          }
+          break;
+        }
+        case DT::FLOAT32: {
+          /* channel_count == 4 (RGBx/BGRx FP32) is not supported/enabled in vart-x/preprocess. */
+          if (channel_count == 3) {
+            result = is_rgb ? VF::RGB_FLOAT : VF::BGR_FLOAT;
+          } else {
+            result = VF::UNKNOWN;
+          }
+          break;
+        }
+        case DT::BF16: {
+          if (channel_count == 3) {
+            result = is_rgb ? VF::RGB_BF16 : VF::BGR_BF16;
+          } else if (channel_count == 4) {
+            result = is_rgb ? VF::RGBx_BF16 : VF::BGRx_BF16;
+          } else {
+            result = VF::UNKNOWN;
+          }
+          break;
+        }
+        case DT::FP16: {
+          if (channel_count == 3) {
+            result = is_rgb ? VF::RGB_FP16 : VF::BGR_FP16;
+          } else if (channel_count == 4) {
+            result = is_rgb ? VF::RGBx_FP16 : VF::BGRx_FP16;
+          } else {
+            result = VF::UNKNOWN;
+          }
+          break;
+        }
+        default: {
+          result = VF::UNKNOWN;
+          break;
+        }
       }
+      break;
+    }
 
-    default:
-      return VF::UNKNOWN;
+    default: {
+      result = VF::UNKNOWN;
+      break;
+    }
   }
+
+  return result;
 }
 
 /**
@@ -433,7 +484,6 @@ static bool parse_model_config(AppContext* ctx, uint32_t idx) {
   preproc_json_str = string((istreambuf_iterator<char>(fileStream)), istreambuf_iterator<char>());
 
   try {
-    bool maintain_aspect_ratio = false;
     string resizing_type_str;
     pt::ptree config;
     istringstream iss(preproc_json_str);
@@ -452,32 +502,34 @@ static bool parse_model_config(AppContext* ctx, uint32_t idx) {
          * combined with the inference tensor's MemoryLayout and DataType. */
         preprocess_cfg.colour_format_str = config.get<string>("preprocess-config.colour-format", "");
 
-        /* Get maintain_aspect_ratio value and perform corresponding resizing
-         * technique based on the resizing-type value provided */
-        maintain_aspect_ratio = config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
-        if (maintain_aspect_ratio) {
-          if (!config.get_child("preprocess-config").count("resizing-type")) {
-            APP_LOG(AppLogLevel::ERROR, log_level,
-                    "Please provide resizing-type to maintain-aspect-ratio. "
-                    "Valid values are LETTERBOX / PANSCAN");
-            return false;
-          }
+        /* Select preprocessing strategy based on resizing-type */
+        if (config.get_child("preprocess-config").count("resizing-type")) {
           resizing_type_str = config.get<string>("preprocess-config.resizing-type");
           if (resizing_type_str.compare(0, 7, "PANSCAN") == 0) {
-            preprocess_cfg.preprocess_info.preprocess_type = PreProcessType::DEFAULT;
-            preprocess_cfg.do_pan_scan = true;
+            preprocess_cfg.preprocess_info.preprocess_type = PreProcessType::PANSCAN;
           } else if (resizing_type_str.compare(0, 9, "LETTERBOX") == 0) {
             preprocess_cfg.preprocess_info.preprocess_type = PreProcessType::LETTERBOX;
+          } else if (resizing_type_str.compare(0, 7, "DEFAULT") == 0) {
+            preprocess_cfg.preprocess_info.preprocess_type = PreProcessType::DEFAULT;
+            /* For DEFAULT type, read maintain-aspect-ratio and symmetric-padding from JSON if provided */
+            preprocess_cfg.preprocess_info.maintain_aspect_ratio =
+                config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
             preprocess_cfg.preprocess_info.symmetric_padding =
                 config.get<bool>("preprocess-config.symmetric-padding", false);
           } else {
-            APP_LOG(AppLogLevel::ERROR, log_level, "Unknown resizing-type: %s. Valid values are LETTERBOX / PANSCAN",
+            APP_LOG(AppLogLevel::ERROR, log_level,
+                    "Unknown resizing-type: %s. Valid values are DEFAULT / LETTERBOX / PANSCAN",
                     resizing_type_str.c_str());
             return false;
           }
         } else {
-          /* Use default preprocess type if maintain-aspect-ratio is not provided */
+          /* resizing-type not provided: use DEFAULT */
           preprocess_cfg.preprocess_info.preprocess_type = PreProcessType::DEFAULT;
+          /* For DEFAULT type, read maintain-aspect-ratio and symmetric-padding from JSON if provided */
+          preprocess_cfg.preprocess_info.maintain_aspect_ratio =
+              config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
+          preprocess_cfg.preprocess_info.symmetric_padding =
+              config.get<bool>("preprocess-config.symmetric-padding", false);
         }
         /* Read the input and output memory bank indices for  pre-processing module */
         preprocess_cfg.in_mem_bank = config.get<uint8_t>("preprocess-config.in-mem-bank");
@@ -497,13 +549,18 @@ static bool parse_model_config(AppContext* ctx, uint32_t idx) {
         APP_LOG(AppLogLevel::DEBUG, log_level, "scale-g: %f", preprocess_cfg.preprocess_info.scale_g);
         APP_LOG(AppLogLevel::DEBUG, log_level, "scale-b: %f", preprocess_cfg.preprocess_info.scale_b);
         APP_LOG(AppLogLevel::DEBUG, log_level, "colour-format: %s", preprocess_cfg.colour_format_str.c_str());
-        APP_LOG(AppLogLevel::DEBUG, log_level, "maintain-aspect-ratio: %d", maintain_aspect_ratio);
-        if (maintain_aspect_ratio) {
-          APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: %s", resizing_type_str.c_str());
-        }
-        if (preprocess_cfg.preprocess_info.preprocess_type == PreProcessType::LETTERBOX) {
-          APP_LOG(AppLogLevel::DEBUG, log_level, "symmetric-padding: %d",
-                  preprocess_cfg.preprocess_info.symmetric_padding);
+        if (preprocess_cfg.preprocess_info.preprocess_type == PreProcessType::PANSCAN) {
+          APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: PANSCAN");
+        } else if (preprocess_cfg.preprocess_info.preprocess_type == PreProcessType::LETTERBOX) {
+          APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: LETTERBOX");
+        } else {
+          /* DEFAULT: log maintain-aspect-ratio and symmetric-padding only if set */
+          if (preprocess_cfg.preprocess_info.maintain_aspect_ratio) {
+            APP_LOG(AppLogLevel::DEBUG, log_level, "maintain-aspect-ratio: %d",
+                    preprocess_cfg.preprocess_info.maintain_aspect_ratio);
+            APP_LOG(AppLogLevel::DEBUG, log_level, "symmetric-padding: %d",
+                    preprocess_cfg.preprocess_info.symmetric_padding);
+          }
         }
       }
     }  // if (ctx->preprocess_enable)
@@ -618,9 +675,9 @@ static bool parse_model_config(AppContext* ctx, uint32_t idx) {
                 return false;
               }
             }  // if (ctx->preprocess_enable)
-          }    // if (!file_path.empty())
-        }      // for
-      }        // if (ifms_config_opt)
+          }  // if (!file_path.empty())
+        }  // for
+      }  // if (ifms_config_opt)
     } else {
       APP_LOG(AppLogLevel::DEBUG, log_level, "Model %u: Skipping ifms-config validation (CLI --input-file provided)",
               idx);
@@ -1168,13 +1225,14 @@ int main(int argc, char* argv[]) {
   cout << "\nTotal number of frames processed: " << num_frame_processed << endl;
 
   std::cout << "---------------------------------------------------------------------------------------" << std::endl;
+  std::vector<std::vector<std::string>> perf_rows;
   for (uint32_t i = 0; i < ctx.num_model_instances; i++) {
     // Use per-model frame count instead of global count
     int64_t model_frames = (i < ctx.frames_processed_per_model.size()) ? ctx.frames_processed_per_model[i] : 0;
 
-    cout << "Model [" << ctx.model_snap_path[i] << "] with device batch size " << ctx.batch_size_per_model[i]
-         << " processed " << model_frames << " frames \n";
-    APP_LOG(AppLogLevel::INFO, log_level, "Model [%s] with device batch size %d processed %ld frames",
+    cout << "Model [" << ctx.model_snap_path[i] << "] with Data Parallelism size (dp_size) "
+         << ctx.batch_size_per_model[i] << " processed " << model_frames << " frames \n";
+    APP_LOG(AppLogLevel::INFO, log_level, "Model [%s] with Data Parallelism size (dp_size) %d processed %ld frames",
             ctx.model_snap_path[i].c_str(), ctx.batch_size_per_model[i], model_frames);
 
     if (model_frames == 0 && ctx.is_benchmark_enabled) {
@@ -1200,7 +1258,6 @@ int main(int argc, char* argv[]) {
     int64_t model_total_batches = model_full_batches + (model_remaining_frames > 0 ? 1 : 0);
 
     if (model_remaining_frames > 0) {
-      // TODO maintain partial batches count per run
       APP_LOG(AppLogLevel::INFO, log_level, "(%ld full batches, 1 partial with %ld frames)", model_full_batches,
               model_remaining_frames);
     } else {
@@ -1210,62 +1267,62 @@ int main(int argc, char* argv[]) {
     if (ctx.is_benchmark_enabled) {
       /* Steady state is the state of the pipeline where all stages are processing frames simultaneously i.e
        * steady state doesn't consider pipeline fill and drain times */
-      double avg_preprocess_time = 0;
-      double avg_inference_time = 0;
-      double avg_postprocess_time = 0;
+      const bool has_preprocess = ctx.preprocess.size() && ctx.preprocess[i];
+      const bool has_inference = ctx.inference.size() && ctx.inference[i];
+      const bool has_postprocess = ctx.postprocess.size() && ctx.postprocess[i];
 
-      // Build pipeline composition string
-      std::string process_str = (ctx.preprocess.size() && ctx.preprocess[i]) ? "Preprocess + Inference" : "Inference";
-      if (ctx.postprocess.size() && ctx.postprocess[i]) {
-        process_str += " + Postprocess";
-      }
+      double avg_preprocess_time = 0;  /* ms/frame */
+      double avg_inference_time = 0;   /* ms/inference (one call = model run in parallel across dp_size instances) */
+      double avg_postprocess_time = 0; /* ms/frame */
 
-      cout << "Steady-State Benchmark Results [Pipeline: " << process_str << "]...\n";
-
-      if (ctx.preprocess.size() && ctx.preprocess[i]) {
+      if (has_preprocess) {
         /* PreProcess processes frames sequentially */
         avg_preprocess_time = (ctx.preprocess[i]->get_total_time_us() / 1000.0) / model_frames;
-        cout << std::left << std::setw(29) << "Average PreProcess latency"
-             << ": " << avg_preprocess_time << " ms/frame\n";
       }
-
-      if (ctx.inference.size() && ctx.inference[i]) {
+      if (has_inference) {
         /* Inference processes frames parallelly */
         avg_inference_time = (ctx.inference[i]->get_total_time_us() / 1000.0) / model_total_batches;
-        cout << std::left << std::setw(29) << "Average Inference latency"
-             << ": " << avg_inference_time << " ms/batch\n";
       }
-
-      if (ctx.postprocess.size() && ctx.postprocess[i]) {
+      if (has_postprocess) {
         /* PostProcess processes frames sequentially */
         avg_postprocess_time = (ctx.postprocess[i]->get_total_time_us() / 1000.0) / model_frames;
-        cout << std::left << std::setw(29) << "Average PostProcess latency"
-             << ": " << avg_postprocess_time << " ms/frame\n";
       }
 
-      /* Average latency for a frame is the accumulated time of all stages */
-      auto avg_latency = avg_preprocess_time + avg_inference_time + avg_postprocess_time;
+      /* Pipeline time is the time for one frame: preprocess + inference + postprocess.
+       * Inference time is split across all frames here so this stays a per-frame number.
+       * The Inference row shows time per inference call (the model runs in parallel across
+       * dp_size HW instances per call), so the two only match when dp_size is 1. */
+      const double inf_ms_per_frame =
+          has_inference ? ((ctx.inference[i]->get_total_time_us() / 1000.0) / model_frames) : 0.0;
+      const double avg_pipeline_latency = avg_preprocess_time + inf_ms_per_frame + avg_postprocess_time;
 
-      auto pre_process_fps = (avg_preprocess_time > 0) ? (1000.0 / avg_preprocess_time) : 0;
-      auto inference_fps = (avg_inference_time > 0) ? (1000.0 * ctx.batch_size_per_model[i] / avg_inference_time) : 0;
-      auto post_process_fps = (avg_postprocess_time > 0) ? (1000.0 / avg_postprocess_time) : 0;
+      /* Pipeline throughput = 1000 / per-frame pipeline latency (frames/sec). avg_pipeline_latency
+       * already sums only the enabled stages (disabled stages contribute 0), so inference-free
+       * configs are handled correctly. This matches x_plus_ml_ort and spatial_mt_ml_ort so pipeline
+       * FPS is directly comparable across apps. */
+      const double pipeline_fps = (avg_pipeline_latency > 0.0) ? (1000.0 / avg_pipeline_latency) : 0.0;
 
-      /* In pipeline, throughput is limited by the slowest stage */
-      auto pipeline_fps = std::min({pre_process_fps > 0 ? pre_process_fps : inference_fps, inference_fps,
-                                    post_process_fps > 0 ? post_process_fps : inference_fps});
-
-      cout << std::left << std::setw(29) << "Average pipeline latency"
-           << ": " << avg_latency << " ms/frame\n";
-      cout << std::left << std::setw(29) << "Average throughput"
-           << ": " << pipeline_fps << " FPS\n";
-
-      if (i < (ctx.num_model_instances - 1)) {
-        std::cout << std::endl;
-      }
+      /* One row per stage; the Models column is populated only on the first (PreProcess) row.
+       * Throughput is reported only for the Pipeline row. */
+      const std::string model_label = "Model " + std::to_string(i + 1);
+      perf_rows.push_back(
+          {model_label, "PreProcess", has_preprocess ? (fmt2(avg_preprocess_time) + " ms/frame") : "-", "-"});
+      perf_rows.push_back(
+          {"", "Inference", has_inference ? fmt_ms_per_inference(avg_inference_time, ctx.batch_size_per_model[i]) : "-",
+           "-"});
+      perf_rows.push_back(
+          {"", "PostProcess", has_postprocess ? (fmt2(avg_postprocess_time) + " ms/frame") : "-", "-"});
+      perf_rows.push_back({"", "Pipeline", fmt2(avg_pipeline_latency) + " ms/frame", fmt2(pipeline_fps)});
     }
   }
 
-  std::cout << "---------------------------------------------------------------------------------------" << std::endl;
+  if (ctx.is_benchmark_enabled && !perf_rows.empty()) {
+    print_perf_table({"Models", "Category", "Time", "Throughput (FPS)"}, perf_rows);
+    cout << "All values are averages over the run. Throughput (FPS) is reported for the Pipeline only.\n"
+         << "Pipeline Throughput (FPS) = 1000 / Pipeline time (ms per frame)." << endl;
+  }
+
+  cout << "---------------------------------------------------------------------------------------" << endl;
 
   destroy_all_context(&ctx);
   return 0;

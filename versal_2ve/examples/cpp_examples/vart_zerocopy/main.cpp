@@ -59,9 +59,13 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include "vart_zerocopy.hpp"
+
+#include "common/app_utils.hpp"
 
 namespace po = boost::program_options;
 
@@ -241,24 +245,18 @@ int main(int argc, char* argv[]) {
     const double inf_ms = (inf_us / n) / 1000.0;
     const double pst_ms = (pst_us / n) / 1000.0;
     const double tot_ms = pre_ms + inf_ms + pst_ms;
-    // Pipeline throughput covers all three stages combined. Infer-only throughput isolates
-    // vart::Runner::execute, which is the call the zero-copy vs non-zero-copy mode actually
-    // moves the needle on. Preprocess and postprocess also shift between modes because each
-    // stage handles a different data format (preprocess emits a different VideoFormat per
-    // mode; postprocess sees a different OFM dtype), but the dominant delta is on the infer line.
+    // Pipeline throughput is the sequential end-to-end rate (1000 / total per-frame latency);
+    // this single-threaded demo runs preprocess -> infer -> postprocess in sequence.
     const double pipeline_fps = tot_ms > 0.0 ? (1000.0 / tot_ms) : 0.0;
-    const double infer_fps = inf_ms > 0.0 ? (1000.0 / inf_ms) : 0.0;
 
-    constexpr int kBenchLabelWidth = 24;
-    std::cout << std::fixed << std::setprecision(3);
-    std::cout << "  " << std::left << std::setw(kBenchLabelWidth) << "preprocess" << pre_ms << " ms / frame\n";
-    std::cout << "  " << std::left << std::setw(kBenchLabelWidth) << "infer" << inf_ms << " ms / frame\n";
-    std::cout << "  " << std::left << std::setw(kBenchLabelWidth) << "postprocess" << pst_ms << " ms / frame\n";
-    std::cout << "  " << std::left << std::setw(kBenchLabelWidth) << "total" << tot_ms << " ms / frame\n";
-    std::cout << "  " << std::left << std::setw(kBenchLabelWidth) << "throughput (infer)" << infer_fps << " FPS\n";
-    std::cout << "  " << std::left << std::setw(kBenchLabelWidth) << "throughput (pipeline)" << pipeline_fps
-              << " FPS\n";
-    std::cout << std::defaultfloat;
+    print_perf_table({"Category", "Time", "Throughput (FPS)"},
+                     {{"PreProcess", fmt2(pre_ms) + " ms/frame", "-"},
+                      {"Inference", fmt_ms_per_inference(inf_ms, pipeline.batch_size()), "-"},
+                      {"PostProcess", fmt2(pst_ms) + " ms/frame", "-"},
+                      {"Pipeline", fmt2(tot_ms) + " ms/frame", fmt2(pipeline_fps)}},
+                     /*group_separators=*/false);
+    std::cout << "All values are averages over the run. Throughput (FPS) is reported for the Pipeline only.\n";
+    std::cout << "Pipeline Throughput (FPS) = 1000 / Pipeline time (ms per frame).\n";
 
     std::cout << "--------------------------------------------------------------------------------\n"
               << "Finished successfully.\n";

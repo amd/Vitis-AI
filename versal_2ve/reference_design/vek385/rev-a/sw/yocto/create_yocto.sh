@@ -34,9 +34,8 @@ usage() {
 
 ABS_PATH=$(pwd)
 
-# Set it to 1 to disable amd-edf user
-disable_amd_edf=0
 VITIS_AI_LAYER="meta-vitis-ai"
+VEK385_LAYER="meta-vek385"
 build_image=0
 build_sdk=0
 clean_build=0
@@ -103,21 +102,6 @@ if [[ "$src_fs_type" == "nfs" || ! -z "${YOCTO_TMP_DIR}" ]]; then
   ${LOCAL_CONF_PATH}
 fi
 
-
-### This is to enter as root user, will remove this patch in release #######
-if [ $disable_amd_edf -eq 1 ] ; then
-  # Check if EXTRA_IMAGE_FEATURES is already defined
-  if grep -q '^#*EXTRA_IMAGE_FEATURES' "$LOCAL_CONF_PATH"; then
-    # Replace existing line (whether commented or not)
-    sed -i \
-      's|^#*EXTRA_IMAGE_FEATURES.*|EXTRA_IMAGE_FEATURES ?= "debug-tweaks"|' \
-      "$LOCAL_CONF_PATH"
-  else
-    # Append if not found
-    echo 'EXTRA_IMAGE_FEATURES ?= "debug-tweaks"' >> "$LOCAL_CONF_PATH"
-  fi
-fi
-
 # Add vitis-ai layer
 if [ ! -d $ABS_PATH/sources/$VITIS_AI_LAYER ]; then
   bitbake-layers create-layer $ABS_PATH/sources/$VITIS_AI_LAYER
@@ -127,12 +111,21 @@ if [ ! -d $ABS_PATH/sources/$VITIS_AI_LAYER ]; then
   bitbake-layers add-layer $ABS_PATH/sources/$VITIS_AI_LAYER
 fi
 
+# Add vek385 board-specific layer
+if [ ! -d $ABS_PATH/sources/$VEK385_LAYER ]; then
+  bitbake-layers create-layer $ABS_PATH/sources/$VEK385_LAYER
+  rm -rf $ABS_PATH/sources/$VEK385_LAYER/recipes-example
+  rm -rf $ABS_PATH/sources/$VEK385_LAYER/COPYING.MIT
+  cp -rf $ABS_PATH/meta-vek385/* $ABS_PATH/sources/$VEK385_LAYER/
+  bitbake-layers add-layer $ABS_PATH/sources/$VEK385_LAYER
+fi
+
 cat << 'EOF' >> "$LOCAL_CONF_PATH"
 
-IMAGE_INSTALL:append = "packagegroup-vaiml"
+IMAGE_INSTALL:append = " packagegroup-vaiml vek385-board-setup"
 PACKAGECONFIG:append:pn-gdb = " tui"
 TOOLCHAIN_HOST_TASK:append = " nativesdk-python3-pip nativesdk-python3-numpy nativesdk-python3-setuptools nativesdk-python3-build nativesdk-python3-wheel nativesdk-python3-protobuf nativesdk-python3-pybind11 nativesdk-protobuf "
-TOOLCHAIN_TARGET_TASK:append = " ryzenai-wheels-dev opencv-dev jansson-dev vart-ml-dev vvas-utils-dev vvas-gst-plugins-dev vart-x-dev hip-dev"
+TOOLCHAIN_TARGET_TASK:append = " ryzenai-wheels-dev opencv-dev jansson-dev vart-ml-dev vvas-utils-dev vvas-gst-plugins-dev vart-x-dev"
 EOF
 
 if [ $build_image -eq 1 ]; then
@@ -152,7 +145,7 @@ if [ $build_image -eq 1 ]; then
   YOCTO_deploy="$YOCTO_TMP_DIR/deploy"
   fi
 
-  BOOTBIN_IMAGE_PATH="$YOCTO_deploy/images/versal2-vek385-sdt-full"
+  BOOTBIN_IMAGE_PATH="$YOCTO_deploy/images/versal-2ve-2vm-vek385-multidomain"
   BUILD_OUTPUT_DIR="$ABS_PATH/../../artifact/amd/boot_images"
   if [ ! -d "$BUILD_OUTPUT_DIR" ]; then
     echo "Build directory does not exist. Creating: $BUILD_OUTPUT_DIR"
@@ -165,13 +158,20 @@ if [ $build_image -eq 1 ]; then
   if [ -d "$BOOTBIN_IMAGE_PATH" ]; then
     # Copy BOOT Image
     IMAGE_FILE=$(find "$BOOTBIN_IMAGE_PATH" \
-        -name "BOOT-versal2-vek385-sdt-full.bin")
+        -name "BOOT-versal-2ve-2vm-vek385-multidomain.bin")
     if [ -f "$IMAGE_FILE" ]; then
       cp -Lf "$IMAGE_FILE" "$BUILD_OUTPUT_DIR/BOOT.bin"
-      cp -Lf "$IMAGE_FILE" \
-        "$BUILD_OUTPUT_DIR/edf-ospi-versal2-vek385-sdt-full.bin"
     else
-      echo "No BOOT-versal2-vek385-sdt-full.bin image found."
+      echo "No BOOT-versal-2ve-2vm-vek385-multidomain.bin image found."
+    fi
+    # Copy BOOT Image
+    OSPI_IMAGE_FILE=$(find "$BOOTBIN_IMAGE_PATH" \
+        -name "edf-ospi-versal-2ve-2vm-vek385-multidomain.bin")
+    if [ -f "$OSPI_IMAGE_FILE" ]; then
+      cp -Lf "$OSPI_IMAGE_FILE" \
+        "$BUILD_OUTPUT_DIR/edf-ospi-versal-2ve-2vm-vek385-multidomain.bin"
+    else
+      echo "No edf-ospi-versal-2ve-2vm-vek385-multidomain.bin image found."
     fi
 
   else
@@ -195,7 +195,15 @@ if [ $build_image -eq 1 ]; then
     else
       echo "No edf-linux-disk-*.rootfs.wic.xz image found."
     fi
-    
+
+    # Copy rootfs.wic.ufs image
+    ROOTUFS_FILE=$(find "$IMAGE_PATH" -name "edf-linux-disk-*.rootfs.wic.ufs")
+    if [ -f "$ROOTUFS_FILE" ]; then
+      cp -Lf "$ROOTUFS_FILE" "$BUILD_OUTPUT_DIR/rootfs.wic.ufs"
+    else
+      echo "No edf-linux-disk-*.rootfs.wic.ufs image found."
+    fi
+
     # Copy rootfs.wic.bmap image
     ROOTFS_FILE=$(find "$IMAGE_PATH" -name "edf-linux-disk-image*rootfs.wic.bmap")
     if [ -f "$ROOTFS_FILE" ]; then
@@ -219,7 +227,6 @@ fi
 if [ $build_sdk -eq 1 ]; then
   echo "Building SDK..."
   #build sdk
-  #if MACHINE=versal2-vek385-sdt-full bitbake meta-edf-app-sdk; then
   if MACHINE=amd-cortexa78-mali-common bitbake meta-edf-app-sdk; then
     echo "Yocto SDK Build successfully"
   else

@@ -27,6 +27,7 @@ CFLAGS+= `pkg-config --cflags opencv4`
 CFLAGS+= `pkg-config --cflags xrt`
 CFLAGS+= `pkg-config --cflags onnxruntime`
 UTILITY_TIMER_DIR = ../common/utility_timer
+CFLAGS+= `pkg-config --cflags vart-x`
 CFLAGS+= -I.
 CFLAGS+= -I../common/include
 CFLAGS+= -I$(UTILITY_TIMER_DIR)/include
@@ -56,9 +57,9 @@ include ../common/install-app.mk
 
 OBJS = $(addprefix $(OBJDIR)/, $(notdir $(SRCS:.cpp=.o)))
 
-# Build utility_timer if it doesn't exist.
+# Build utility_timer with the cross-compiler; do not inherit app LDFLAGS.
 $(UTILITY_TIMER_DIR)/lib/libutility_timer.so:
-	$(MAKE) -C $(UTILITY_TIMER_DIR) all
+	$(MAKE) -C $(UTILITY_TIMER_DIR)  LDFLAGS=
 
 $(TARGET): $(OBJS) $(UTILITY_TIMER_DIR)/lib/libutility_timer.so
 	$(CXX) $(CFLAGS) -o $(TARGET) $(OBJS) $(LDFLAGS)

@@ -94,10 +94,7 @@ AppPostProcess::AppPostProcess(const PostProcessConfig& config,
 AppPostProcess::~AppPostProcess() {
   APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] Destructor called", inst_name_.c_str());
 
-  // Stop thread if running
-  if (is_running()) {
-    stop();
-  }
+  stop();
 
   // Close output files
   close_output_files();
@@ -188,21 +185,35 @@ bool AppPostProcess::start() {
  * @brief Stop the postprocess thread gracefully
  */
 void AppPostProcess::stop() {
-  if (!is_running()) {
-    APP_LOG(AppLogLevel::WARNING, config_.log_level, "%s already stopped", inst_name_.c_str());
-    return;
+  if (is_running()) {
+    APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] Stopping...", inst_name_.c_str());
+    state_ = ThreadState::SHUTTING_DOWN;
+    // Notify queues to wake up any waiting threads
+    inference_queue_.finish();
+    if (original_frame_queue_) {
+      original_frame_queue_->finish();
+    }
+    if (completion_queue_) {
+      completion_queue_->finish();
+    }
+  } else if (worker_thread_ && worker_thread_->joinable()) {
+    // Worker left RUNNING on critical error; still wake threads blocked in pop()
+    inference_queue_.finish();
+    if (original_frame_queue_) {
+      original_frame_queue_->finish();
+    }
+    if (completion_queue_) {
+      completion_queue_->finish();
+    }
   }
-
-  APP_LOG(AppLogLevel::INFO, config_.log_level, "Stopping %s...", inst_name_.c_str());
-
-  state_ = ThreadState::SHUTTING_DOWN;
+  // Always join: a worker that self-shut-down on critical error already left
+  // RUNNING, and destroying a joinable std::thread calls terminate().
   if (worker_thread_ && worker_thread_->joinable()) {
     worker_thread_->join();
+    APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] stopped: Processed %lu frames, total time: %.2f ms",
+            inst_name_.c_str(), frames_processed_.load(), total_time_ / 1000.0f);
   }
-
   state_ = ThreadState::IDLE;
-  APP_LOG(AppLogLevel::DEBUG, config_.log_level, "%s stopped: Processed %lu frames, total time: %.2f ms",
-          inst_name_.c_str(), frames_processed_.load(), total_time_ / 1000.0f);
 }
 
 /**
@@ -232,7 +243,9 @@ void AppPostProcess::worker_thread_function() {
       // Handle inference results (blocking)
       InferenceResult result;
       if (!inference_queue_.pop(result)) {
-        // Queue finished or empty, continue
+        if (inference_queue_.is_finished()) {
+          break;
+        }
         continue;
       }
 
@@ -331,8 +344,10 @@ bool AppPostProcess::process_inference_result(const InferenceResult& result) {
     // Full pipeline: PostProcess → Transform → MetaConvert → Overlay
     for (uint32_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
       if (batch_idx < infer_results.size()) {
+        const bool scale_info_valid = batch_idx < result.scale_info.size();
         run_metaconvert_overlay(infer_results[batch_idx], original_frames[batch_idx], (result.frame_index + batch_idx),
-                                result.iteration_number);
+                                result.iteration_number,
+                                scale_info_valid ? result.scale_info[batch_idx] : vart::InferResScaleInfo{});
       } else {
         APP_LOG(AppLogLevel::WARNING, config_.log_level, "[%s] No inference results for batch index %u",
                 inst_name_.c_str(), batch_idx);
@@ -358,9 +373,11 @@ bool AppPostProcess::process_inference_result(const InferenceResult& result) {
   if (completion_queue_) {
     ProcessingComplete completion(result.iteration_number, result.frame_index, config_.instance_id, batch_size);
     if (!completion_queue_->push(completion)) {
-      APP_LOG(AppLogLevel::WARNING, config_.log_level,
+      if (state_.load() == ThreadState::RUNNING) {
+        APP_LOG(AppLogLevel::WARNING, config_.log_level,
               "[%s] Failed to push completion notification for batch at frame %d", inst_name_.c_str(),
               result.frame_index);
+      }
     } else {
       APP_LOG(AppLogLevel::DEBUG, config_.log_level,
               "[%s] Sent completion notification: iter=%ld, batch_start_frame=%d (batch_size=%u)", inst_name_.c_str(),
@@ -417,7 +434,8 @@ bool AppPostProcess::get_matching_frames_batch(int64_t iteration_number,
 void AppPostProcess::run_metaconvert_overlay(const InferResultList& frame_results,
                                              const InputFrame& original_frame,
                                              int frame_index,
-                                             int64_t iteration_number) {
+                                             int64_t iteration_number,
+                                             const vart::InferResScaleInfo& scale_info) {
   APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] Running MetaConvert/Overlay for frame %d (iteration %ld)",
           inst_name_.c_str(), frame_index, iteration_number);
 
@@ -434,24 +452,15 @@ void AppPostProcess::run_metaconvert_overlay(const InferResultList& frame_result
     return;
   }
 
-  // Get VideoInfo to extract dimensions
-  const vart::VideoInfo& vinfo = first_vframe->get_video_info();
-
   // Create root result to hold all detections/classifications for this frame
   auto root_result = make_shared<vart::InferResult>(vart::InferResultType::ROOT);
   root_result->add_children(frame_results);
 
-  // Calculate scale factors for transforming results to original resolution
-  InferResScaleInfo scale_info;
-  scale_info.input_frame_width = vinfo.width;
-  scale_info.input_frame_height = vinfo.height;
-  scale_info.model_input_width = config_.model_input_width;
-  scale_info.model_input_height = config_.model_input_height;
-
   // Transform each result to original resolution
   try {
     for (auto& result : frame_results) {
-      result->transform(scale_info);
+      vart::InferResScaleInfo transform_info = scale_info;
+      result->transform(transform_info);
     }
   } catch (const exception& e) {
     APP_LOG(AppLogLevel::ERROR, config_.log_level, "[%s] Exception in transform: %s", inst_name_.c_str(), e.what());
@@ -1017,12 +1026,14 @@ bool AppPostProcess::create_vart_postprocess() {
     tinfo.size = config_.model_input_tensors_info[i].meta.size_in_bytes;
     tinfo.shape = config_.model_input_tensors_info[i].meta.shape;
     tinfo.scale_coeff = config_.model_input_tensors_info[i].quantization_factor;
+    tinfo.memory_layout = std::string(vart::to_string(config_.model_input_tensors_info[i].meta.memory_layout));
 
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Input Tensor%ld name: %s", i, tinfo.name.c_str());
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Input Tensor%ld size: %u", i, tinfo.size);
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Input Tensor%ld scale coeff: %f", i, tinfo.scale_coeff);
     string tensor_shape = build_shape_string(config_.model_input_tensors_info[i].meta.shape);
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Input Tensor%ld shape: %s", i, tensor_shape.c_str());
+    APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Input Tensor%ld memory layout: %s", i, tinfo.memory_layout.c_str());
 
     // Map vart::DataType to TensorDataType
     switch (config_.model_input_tensors_info[i].meta.data_type) {
@@ -1057,12 +1068,14 @@ bool AppPostProcess::create_vart_postprocess() {
     tinfo.shape = config_.model_out_tensors_info[i].meta.shape;
     tinfo.scale_coeff = use_user_provided_scale_factors ? quant_scale_factors[i]
                                                         : config_.model_out_tensors_info[i].quantization_factor;
+    tinfo.memory_layout = std::string(vart::to_string(config_.model_out_tensors_info[i].meta.memory_layout));
 
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Output Tensor%ld name: %s", i, tinfo.name.c_str());
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Output Tensor%ld size: %u", i, tinfo.size);
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Output Tensor%ld scale coeff: %f", i, tinfo.scale_coeff);
     string tensor_shape = build_shape_string(config_.model_out_tensors_info[i].meta.shape);
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Output Tensor%ld shape: %s", i, tensor_shape.c_str());
+    APP_LOG(AppLogLevel::DEBUG, config_.log_level, "Output Tensor%ld memory layout: %s", i, tinfo.memory_layout.c_str());
 
     // Map vart::DataType to TensorDataType
     switch (config_.model_out_tensors_info[i].meta.data_type) {

@@ -11,7 +11,7 @@ LIC_FILES_CHKSUM = "\
 
 S = "${WORKDIR}"
 LOCAL_DIR="${WORKDIR}/wheels"
-PYPI_AMD_VAI_INDEX = "https://pypi.amd.com/vai/6.2/simple"
+PYPI_AMD_VAI_INDEX = "https://pypi.amd.com/vai/6.3/simple"
 RYZENAI_WHEEL_CACHE = "${DL_DIR}/ryzenai-wheels"
 
 inherit python3native
@@ -38,25 +38,25 @@ do_fetch() {
 
   install -d "${RYZENAI_WHEEL_CACHE}"
 
-  if ! ls ${RYZENAI_WHEEL_CACHE}/onnxruntime_vitisai*.whl >/dev/null 2>&1 || \
-     ! ls ${RYZENAI_WHEEL_CACHE}/voe*.whl >/dev/null 2>&1; then
-    bbnote "Downloading onnxruntime-vitisai and voe wheels from ${PYPI_AMD_VAI_INDEX}"
-    ${PIP} download --no-deps --no-cache-dir \
+  if ! ls ${RYZENAI_WHEEL_CACHE}/onnxruntime_vitisai*.whl >/dev/null 2>&1; then
+    bbnote "Downloading onnxruntime-vitisai wheel from ${PYPI_AMD_VAI_INDEX}"
+    ${PIP} download --no-deps --no-cache-dir --python-version 3.11 \
       --index-url "${PYPI_AMD_VAI_INDEX}" \
       -d "${RYZENAI_WHEEL_CACHE}" \
-      onnxruntime-vitisai voe
+      onnxruntime-vitisai
   else
-    bbnote "Using cached onnxruntime-vitisai and voe wheels from ${RYZENAI_WHEEL_CACHE}"
+    bbnote "Using cached onnxruntime-vitisai wheel from ${RYZENAI_WHEEL_CACHE}"
   fi
 
-  if ! ls ${RYZENAI_WHEEL_CACHE}/flexmlrt*.whl >/dev/null 2>&1; then
-    bbnote "Downloading flexmlrt wheel for linux_aarch64 from ${PYPI_AMD_VAI_INDEX}"
+  if ! ls ${RYZENAI_WHEEL_CACHE}/flexmlrt*.whl >/dev/null 2>&1 || \
+     ! ls ${RYZENAI_WHEEL_CACHE}/voe*.whl >/dev/null 2>&1; then
+    bbnote "Downloading flexmlrt wheel and voe wheel for linux_aarch64 from ${PYPI_AMD_VAI_INDEX}"
     ${PIP} download --platform linux_aarch64 --no-deps --no-cache-dir \
       --index-url "${PYPI_AMD_VAI_INDEX}" \
       -d "${RYZENAI_WHEEL_CACHE}" \
-      flexmlrt
+      flexmlrt voe
   else
-    bbnote "Using cached flexmlrt wheel from ${RYZENAI_WHEEL_CACHE}"
+    bbnote "Using cached flexmlrt and voe wheels from ${RYZENAI_WHEEL_CACHE}"
   fi
 
   if ! ls ${RYZENAI_WHEEL_CACHE}/*.whl >/dev/null 2>&1; then

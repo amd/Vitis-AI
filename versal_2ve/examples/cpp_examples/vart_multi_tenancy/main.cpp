@@ -84,6 +84,8 @@
 
 #include "vart_multi_tenancy.hpp"
 
+#include "common/app_utils.hpp"
+
 // ---------------------------------------------------------------------------
 // Model execution phase (runs in worker threads after validation passes)
 // ---------------------------------------------------------------------------
@@ -121,7 +123,7 @@ static int prepare_model(size_t index, VartMultiTenancy& model, const utils::Mod
       }
     } else {
       log_error("[ERROR] ", model_name,
-                " [Step 2/4 Load IFMs]: no IFM files specified in ifm_node_file_map."
+                " [Step 2/4 Load IFMs]: no IFM files specified in ifm-node-file-map."
                 " Provide IFM files in the JSON config or use --dry-run.");
       return 1;
     }
@@ -148,6 +150,7 @@ static int run_model_execution(size_t index, VartMultiTenancy& model, uint32_t i
 
   try {
     for (uint32_t iter = 0; iter < iterations; ++iter) {
+      log_debug("[DEBUG] ", model_name, " [Step 3/4 Infer]: iteration ", iter + 1, "/", iterations, ".");
       auto status = model.infer_execute();
       if (status != vart::StatusCode::SUCCESS) {
         log_error("[ERROR] ", model_name, " [Step 3/4 Infer]: inference failed at iteration ", iter, " (status ",
@@ -208,7 +211,7 @@ static void print_ifm_node_maps_with_metadata(const utils::Options& opt,
   };
 
   write_line("\nIFM Node Metadata for All Models\n");
-  write_line("Use this table to update ifm_node_file_map in your JSON config.\n");
+  write_line("Use this table to update ifm-node-file-map in your JSON config.\n");
   write_line("Ensure IFM node names in the config match the model input node names.\n");
 
   for (size_t i = 0; i < models.size(); ++i) {
@@ -352,13 +355,20 @@ static int init_and_validate_models(const utils::Options& opt,
     std::string model_name = "Model_" + std::to_string(i + 1);
 
     log_info("\n========== ", model_name, " ==========");
-    log_info("  model_cache_path      : ", cfg.model_cache_path);
+    log_info("  model-cache-path      : ", cfg.model_cache_path);
     if (cfg.is_start_column_provided)
-      log_info("  start_column          : ", cfg.start_column);
+      log_info("  start-column          : ", cfg.start_column);
     if (cfg.is_columns_sharing_provided)
-      log_info("  aie_columns_sharing   : ", (cfg.aie_columns_sharing ? "shared" : "exclusive"));
+      log_info("  aie-columns-sharing   : ", (cfg.aie_columns_sharing ? "shared" : "exclusive"));
+    log_info("  input-tensor-type     : ", cfg.input_tensor_type);
+    log_info("  output-tensor-type    : ", cfg.output_tensor_type);
 
-    auto model = std::make_unique<VartMultiTenancy>(model_name, cfg.model_cache_path);
+    // A CPU subgraph at a boundary requires the "CPU" tensor view for that
+    // direction; "HW" (the default) would make runner creation fail.
+    vart::TensorType in_type = (cfg.input_tensor_type == "CPU") ? vart::TensorType::CPU : vart::TensorType::HW;
+    vart::TensorType out_type = (cfg.output_tensor_type == "CPU") ? vart::TensorType::CPU : vart::TensorType::HW;
+
+    auto model = std::make_unique<VartMultiTenancy>(model_name, cfg.model_cache_path, in_type, out_type);
 
     if (!model->initialize(cfg)) {
       log_error("[ERROR] ", model_name, " initialization failed.");
@@ -502,46 +512,18 @@ int main(int argc, char* argv[]) {
     utils::print_execution_summary(opt, models, random_io);
 
     if (benchmark) {
-      std::cout << "\n========== Performance ==========\n";
       double avg_infer_ms = infer_ms / static_cast<double>(iterations);
-      std::ostringstream total_oss;
-      total_oss << std::fixed << std::setprecision(2) << infer_ms;
-      std::ostringstream avg_oss;
-      avg_oss << std::fixed << std::setprecision(2) << avg_infer_ms;
+      /* The tenant models run concurrently, so avg_infer_ms is the wall-clock latency of one
+       * parallel pass in which each model completes a single inference. Throughput is therefore
+       * the per-model FPS, comparable to single-model results, not an aggregate across models.
+       * Concurrently-running tenants may have different Data Parallelism sizes (dp_size - the
+       * number of HW instances each model runs on in parallel), so no single dp_size applies
+       * here - the plain (unannotated) formatter is used. */
+      double throughput_fps = (avg_infer_ms > 0.0) ? (1000.0 / avg_infer_ms) : 0.0;
 
-      // Prefix convention used below:
-      // h_ = table header label, v_ = table value text, w_ = computed column width.
-      const std::string h_models = "Models per Run";
-      const std::string h_runs = "Total Runs";
-      const std::string h_total = "Total inference time (ms)";
-      const std::string h_avg = "Avg inference for one Run (ms)";
-
-      const std::string v_models = std::to_string(opt.models.size());
-      const std::string v_runs = std::to_string(iterations);
-      const std::string v_total = total_oss.str();
-      const std::string v_avg = avg_oss.str();
-
-      const size_t w_models = std::max(h_models.size(), v_models.size());
-      const size_t w_runs = std::max(h_runs.size(), v_runs.size());
-      const size_t w_total = std::max(h_total.size(), v_total.size());
-      const size_t w_avg = std::max(h_avg.size(), v_avg.size());
-
-      const std::string sep = "+-" + std::string(w_models, '-') + "-+-" + std::string(w_runs, '-') + "-+-" +
-                              std::string(w_total, '-') + "-+-" + std::string(w_avg, '-') + "-+";
-
-      std::cout << sep << "\n";
-      std::cout << "| " << std::left << std::setw(w_models) << h_models << " | " << std::left << std::setw(w_runs)
-                << h_runs << " | " << std::left << std::setw(w_total) << h_total << " | " << std::left
-                << std::setw(w_avg) << h_avg << " |\n";
-      std::cout << sep << "\n";
-      std::cout << "| " << std::left << std::setw(w_models) << v_models << " | " << std::left << std::setw(w_runs)
-                << v_runs << " | " << std::left << std::setw(w_total) << v_total << " | " << std::left
-                << std::setw(w_avg) << v_avg << " |\n";
-      std::cout << sep << "\n";
-
-      std::cout << "Models per Run : Number of models configured for execution in a single run.\n";
-      std::cout << "Total Runs     : Number of times configured full model set inference cycle is repeated.\n";
-      std::cout << "Avg inference  : Total inference time divided by Total Runs.\n\n";
+      std::cout << "\n";
+      print_perf_table({{"Average Inference Time", fmt_ms_per_inference(avg_infer_ms)},
+                        {"Average Throughput", fmt_fps(throughput_fps)}});
     }
 
   } catch (const std::exception& e) {

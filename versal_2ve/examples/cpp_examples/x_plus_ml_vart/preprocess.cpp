@@ -47,11 +47,13 @@ static size_t get_video_frame_size(vart::VideoFormat fmt, size_t width, size_t h
     case vart::VideoFormat::BGR:
     case vart::VideoFormat::RGB:
     case vart::VideoFormat::RGBP:
+    case vart::VideoFormat::BGRP:
       size = (width * height) * 3;
       break;
     case vart::VideoFormat::RGB_FLOAT:
     case vart::VideoFormat::BGR_FLOAT:
     case vart::VideoFormat::RGBP_FLOAT:
+    case vart::VideoFormat::BGRP_FLOAT:
       size = (width * height) * 3 * 4;
       break;
     case vart::VideoFormat::Y_UV8_420:
@@ -65,6 +67,8 @@ static size_t get_video_frame_size(vart::VideoFormat fmt, size_t width, size_t h
       break;
     case vart::VideoFormat::RGBP_BF16:
     case vart::VideoFormat::RGBP_FP16:
+    case vart::VideoFormat::BGRP_BF16:
+    case vart::VideoFormat::BGRP_FP16:
     case vart::VideoFormat::RGB_BF16:
     case vart::VideoFormat::RGB_FP16:
       size = (width * height) * 3 * 2;
@@ -165,6 +169,7 @@ static void dump_preproc_input_to_file(const PreProcessConfig* ctx,
       break;
 
     case VideoFormat::RGBP:
+    case VideoFormat::BGRP:
       // Planar RGB: 1 byte per pixel per plane, dump line by line to skip padding
       for (uint8_t plane = 0; plane < map_info->nplanes; ++plane) {
         for (int h = 0; h < map_info->height; ++h) {
@@ -175,6 +180,7 @@ static void dump_preproc_input_to_file(const PreProcessConfig* ctx,
       break;
 
     case VideoFormat::RGBP_FLOAT:
+    case VideoFormat::BGRP_FLOAT:
       // Planar RGB float: 4 bytes per pixel per plane, dump line by line to skip padding
       for (uint8_t plane = 0; plane < map_info->nplanes; ++plane) {
         for (int h = 0; h < map_info->height; ++h) {
@@ -186,6 +192,8 @@ static void dump_preproc_input_to_file(const PreProcessConfig* ctx,
 
     case VideoFormat::RGBP_BF16:
     case VideoFormat::RGBP_FP16:
+    case VideoFormat::BGRP_BF16:
+    case VideoFormat::BGRP_FP16:
       // Planar RGB half: 2 bytes per pixel per plane, dump line by line to skip padding
       for (uint8_t plane = 0; plane < map_info->nplanes; ++plane) {
         for (int h = 0; h < map_info->height; ++h) {
@@ -244,9 +252,7 @@ AppPreProcess::AppPreProcess(const PreProcessConfig& config,
       inst_name_("Preprocess" + std::to_string(config.instance_id)) {}
 
 AppPreProcess::~AppPreProcess() {
-  if (is_running()) {
-    stop();
-  }
+  stop();
 
   // Clean up VART PreProcess contexts (smart pointer handles automatic cleanup)
   pre_process_.reset();
@@ -303,27 +309,25 @@ bool AppPreProcess::start() {
 }
 
 void AppPreProcess::stop() {
-  if (!is_running()) {
-    APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] already stopped", inst_name_.c_str());
-    return;
+  if (is_running()) {
+    // Signal shutdown
+    APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] Stopping...", inst_name_.c_str());
+    state_ = ThreadState::SHUTTING_DOWN;
+    // Notify queues to wake up any waiting threads
+    input_queue_->finish();
+    output_queue_->finish();
+  } else if (worker_thread_ && worker_thread_->joinable()) {
+    // Worker left RUNNING on critical error; still wake threads blocked in pop()
+    input_queue_->finish();
+    output_queue_->finish();
   }
-
-  APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] Stopping...", inst_name_.c_str());
-
-  // Signal shutdown
-  state_ = ThreadState::SHUTTING_DOWN;
-
-  // Notify queues to wake up any waiting threads
-  input_queue_->finish();
-  output_queue_->finish();
-
-  // Wait for worker thread to finish
+  // Always join: a worker that self-shut-down on critical error already left
+  // RUNNING, and destroying a joinable std::thread calls terminate().
   if (worker_thread_ && worker_thread_->joinable()) {
     worker_thread_->join();
+    APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] stopped", inst_name_.c_str());
   }
-
   state_ = ThreadState::IDLE;
-  APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] stopped", inst_name_.c_str());
 }
 
 void AppPreProcess::worker_thread_function() {
@@ -380,7 +384,12 @@ void AppPreProcess::worker_thread_function() {
           break;
         }
       } else {
-        // Queue finished or error - check if we should continue
+        // Check if queue is finished (normal completion or flush shutdown)
+        if (input_queue_->is_finished()) {
+          APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] Input queue finished, exiting worker thread",
+                  inst_name_.c_str());
+          break;
+        }
         if (state_.load() != ThreadState::RUNNING) {
           break;
         }
@@ -443,7 +452,8 @@ bool AppPreProcess::process_input_frame(const InputFrame& input_frame) {
                 frame_idx);
 
         if (!process_frame_with_vart(input_frame.video_frame[batch_idx][frame_idx], output_frame,
-                                     input_frame.frame_index, input_frame.iteration_number)) {
+                                     input_frame.frame_index, input_frame.iteration_number,
+                                     result.scale_info[batch_idx])) {
           APP_LOG(AppLogLevel::ERROR, config_.log_level, "VART preprocess engine failed for batch[%zu][%zu]", batch_idx,
                   frame_idx);
           return false;
@@ -461,6 +471,9 @@ bool AppPreProcess::process_input_frame(const InputFrame& input_frame) {
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] push batch to output q", inst_name_.c_str());
 
     if (!output_queue_->push(result)) {
+      if (state_.load() != ThreadState::RUNNING) {
+        return true;  // shutdown, not a failure
+      }
       APP_LOG(AppLogLevel::ERROR, config_.log_level, "Failed to push result batch to output queue");
       return false;
     }
@@ -527,9 +540,12 @@ bool AppPreProcess::create_preprocess_engine() {
 bool AppPreProcess::process_frame_with_vart(std::shared_ptr<vart::VideoFrame> input_frame,
                                             std::shared_ptr<vart::VideoFrame> output_frame,
                                             int frame_index,
-                                            int64_t iteration_number) {
+                                            int64_t iteration_number,
+                                            vart::InferResScaleInfo& scale_info) {
   vector<vart::PreProcessOp> preprocess_ops;
   vart::PreProcessOp preprocess_op;
+
+  scale_info = {};
 
   // Set input ROI
   preprocess_op.in_roi.x = 0;
@@ -544,11 +560,6 @@ bool AppPreProcess::process_frame_with_vart(std::shared_ptr<vart::VideoFrame> in
   preprocess_op.out_roi.height = output_frame->get_video_info().height;
   preprocess_op.out_roi.width = output_frame->get_video_info().width;
   preprocess_op.out_frame = output_frame.get();
-
-  // Apply PanScan if enabled for this specific preprocessing config
-  if (config_.do_pan_scan) {
-    set_roi_pan_scan(preprocess_op);
-  }
 
   preprocess_ops.push_back(preprocess_op);
 
@@ -576,51 +587,35 @@ bool AppPreProcess::process_frame_with_vart(std::shared_ptr<vart::VideoFrame> in
   try {
     // Execute VART preprocessing
     auto start = std::chrono::high_resolution_clock::now();
-    pre_process_->process(preprocess_ops);
+    vector<vart::PreProcessOpRes> ops_res;
+    pre_process_->process(preprocess_ops, ops_res);
     auto end = std::chrono::high_resolution_clock::now();
     total_time_ += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+
+    if (!ops_res.empty()) {
+      const auto& in_vinfo = input_frame->get_video_info();
+      const auto& out_vinfo = output_frame->get_video_info();
+      /* Single PreProcessOp per call (preprocess_ops.size() == 1), so use ops_res[0] (ops_res[i] matches preprocess_ops[i]). */
+      const auto& type_meta = ops_res[0].type_meta;
+      /* Bind PreProcess geometry to InferResult transform. */
+      scale_info = {};
+      scale_info.model_input_width = out_vinfo.width;
+      scale_info.model_input_height = out_vinfo.height;
+      scale_info.input_frame_width = in_vinfo.width;
+      scale_info.input_frame_height = in_vinfo.height;
+      scale_info.scale_x = type_meta.scale_x;
+      scale_info.scale_y = type_meta.scale_y;
+      scale_info.crop_x = type_meta.crop_x;
+      scale_info.crop_y = type_meta.crop_y;
+      scale_info.pad_x = type_meta.pad_x;
+      scale_info.pad_y = type_meta.pad_y;
+    }
 
     return true;
   } catch (const exception& e) {
     APP_LOG(AppLogLevel::ERROR, config_.log_level, "Failed to process frame with VART: %s", e.what());
     return false;
   }
-}
-
-void AppPreProcess::set_roi_pan_scan(vart::PreProcessOp& preprocess_op) {
-  float current_aspect_ratio =
-      static_cast<float>(preprocess_op.in_roi.width) / static_cast<float>(preprocess_op.in_roi.height);
-  float target_aspect_ratio =
-      static_cast<float>(preprocess_op.out_roi.width) / static_cast<float>(preprocess_op.out_roi.height);
-
-  int x, y, width, height;
-  x = preprocess_op.in_roi.x;
-  y = preprocess_op.in_roi.y;
-  width = preprocess_op.in_roi.width;
-  height = preprocess_op.in_roi.height;
-
-  // Target aspect ratio is greater so crop from top and bottom
-  if (current_aspect_ratio < target_aspect_ratio) {
-    width = preprocess_op.in_roi.width;
-    height = static_cast<int>(static_cast<float>(preprocess_op.in_roi.width) / target_aspect_ratio);
-    x = 0;
-    y = (preprocess_op.in_roi.height - height) / 2;
-  }
-  // Target aspect ratio is smaller so crop from left and right
-  else {
-    width = static_cast<int>(static_cast<float>(preprocess_op.in_roi.height) * target_aspect_ratio);
-    height = preprocess_op.in_roi.height;
-    x = (preprocess_op.in_roi.width - width) / 2;
-    y = 0;
-  }
-
-  preprocess_op.in_roi.x = x;
-  preprocess_op.in_roi.y = y;
-  preprocess_op.in_roi.width = width;
-  preprocess_op.in_roi.height = height;
-
-  APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] PanScan ROI adjusted: (%d,%d) %dx%d", inst_name_.c_str(), x, y,
-          width, height);
 }
 
 bool AppPreProcess::create_output_pool() {

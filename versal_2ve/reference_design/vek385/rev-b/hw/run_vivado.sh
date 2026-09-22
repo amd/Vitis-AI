@@ -24,9 +24,32 @@ export PROJECT_NAME=example_design
 export BOARD=XIL_VEK385
 export CHIP_PART=xc2ve3858-ssva2112-2MP-e-S
 
+# Build switches (FMC_CARD, NPU_FW, MIPI) come from rev-b/build.cfg, the shared
+# source of truth. build.cfg is authoritative: when present, its values win over
+# any inherited/exported environment values. Environment values are used only as
+# a fallback when build.cfg is missing (or omits a key); hardcoded defaults apply
+# otherwise.
+BUILD_CFG="$ABS_PATH/../build.cfg"
+if [ -f "$BUILD_CFG" ]; then
+  source "$BUILD_CFG"
+fi
+export FMC_CARD=${FMC_CARD:-96716A}
+export NPU_FW=${NPU_FW:-0}
+export MIPI=${MIPI:-0}
+
+# NPU_FW is not supported for this release.
+if [ "${NPU_FW}" -eq 1 ]; then
+  echo "ERROR: NPU_FW=1 is not supported for this release. Exiting." >&2
+  exit 1
+fi
+
 echo -e "\n # Hardware platform generation has started at: $(date '+%Y-%m-%d %H:%M:%S')"
 echo -e " Detailed Vivado logs are available at: ${ABS_PATH}/vivado.log"
-echo -e " Expected to take approximately 40 minutes to complete...\n"
+if [ "${MIPI}" -eq 1 ]; then
+  echo -e " Estimated build duration: ~2 hours\n"
+else
+  echo -e " Estimated build duration: ~40 minutes\n"
+fi
 
 vivado -mode tcl -source create_platform.tcl >> $ABS_PATH/cmd.log
 if [ $? != 0 ]; then tail $ABS_PATH/cmd.log && exit 1; fi

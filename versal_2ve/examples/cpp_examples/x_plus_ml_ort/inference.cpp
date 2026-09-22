@@ -143,7 +143,6 @@ size_t get_tensor_size_in_bytes(Ort::ConstTensorTypeAndShapeInfo ort_tensor_info
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
       size_in_bytes = size * sizeof(uint16_t);  // ONNX uses uint16 to represent FP16
       break;
-    // TODO Handle other formats as well
     default:
       break;
   }
@@ -365,7 +364,6 @@ Ort::Value create_input_tensor(AppLogLevel log_level, const InferTensorInfo& ten
       /* Formats with float data that directly match the tensor's format */
       float_data = reinterpret_cast<float32_t*>(map_info.planes[0].data);
     } else {
-      // TODO get string form of mapinfo.fmt
       APP_LOG(AppLogLevel::ERROR, log_level, "Video Format %d is not compatible with shape format %s",
               static_cast<int>(map_info.fmt), get_memory_layout_string(tensor_info.meta.memory_layout).c_str());
       std::stringstream ss;
@@ -586,16 +584,18 @@ device_execution_provider get_execution_provider(const std::string& mode) {
  * @param config Property tree containing the inference configuration parameters.
  * @param log_level Application log level for logging.
  *
- * Required configuration keys under "inference-config.execution-provider-options":
- *   - config_file: Path to the Vitis AI configuration file.
- *   - cache_dir: Directory for caching compiled models.
+ * Required configuration keys under "inference-config.execution-provider-options".
+ * Hyphenated key schema is recommended; the underscore schema (e.g. config_file
+ * for config-file) is maintained for backward compatibility:
+ *   - config-file: Path to the Vitis AI configuration file.
+ *   - cache-dir: Directory for caching compiled models.
  *   - target: Target device for execution.
- *   - cache_key: Key for cache identification.
+ *   - cache-key: Key for cache identification.
  *
  * Optional configuration keys:
- *   - encryption_key
- *   - ai_analyzer_visualization
- *   - ai_analyzer_profiling
+ *   - encryption-key
+ *   - ai-analyzer-visualization
+ *   - ai-analyzer-profiling
  *
  * Logs the usage of the Vitis AI Execution Provider.
  */
@@ -604,13 +604,41 @@ static void setup_vitis_ai_execution_provider(Ort::SessionOptions& session_optio
                                               AppLogLevel log_level) {
   try {
     auto options = std::unordered_map<std::string, std::string>{};
-    options["config_file"] = config.get<std::string>("inference-config.execution-provider-options.config_file");
-    options["cache_dir"] = config.get<std::string>("inference-config.execution-provider-options.cache_dir");
+    auto config_file_node = config.get_optional<std::string>("inference-config.execution-provider-options.config-file");
+    if (!config_file_node) {
+      config_file_node = config.get_optional<std::string>("inference-config.execution-provider-options.config_file");
+    }
+    if (!config_file_node) {
+      throw std::runtime_error("Missing required field: inference-config.execution-provider-options.config-file");
+    }
+    options["config_file"] = *config_file_node;
+
+    auto cache_dir_node = config.get_optional<std::string>("inference-config.execution-provider-options.cache-dir");
+    if (!cache_dir_node) {
+      cache_dir_node = config.get_optional<std::string>("inference-config.execution-provider-options.cache_dir");
+    }
+    if (!cache_dir_node) {
+      throw std::runtime_error("Missing required field: inference-config.execution-provider-options.cache-dir");
+    }
+    options["cache_dir"] = *cache_dir_node;
+
     options["target"] = config.get<std::string>("inference-config.execution-provider-options.target");
-    options["cache_key"] = config.get<std::string>("inference-config.execution-provider-options.cache_key");
+
+    auto cache_key_node = config.get_optional<std::string>("inference-config.execution-provider-options.cache-key");
+    if (!cache_key_node) {
+      cache_key_node = config.get_optional<std::string>("inference-config.execution-provider-options.cache_key");
+    }
+    if (!cache_key_node) {
+      throw std::runtime_error("Missing required field: inference-config.execution-provider-options.cache-key");
+    }
+    options["cache_key"] = *cache_key_node;
 
     // Parse optional options
     std::vector<std::pair<std::string, std::string>> option_keys = {
+        {"encryption_key", "inference-config.execution-provider-options.encryption-key"},
+        {"ai_analyzer_visualization", "inference-config.execution-provider-options.ai-analyzer-visualization"},
+        {"ai_analyzer_profiling", "inference-config.execution-provider-options.ai-analyzer-profiling"}};
+    std::vector<std::pair<std::string, std::string>> legacy_option_keys = {
         {"encryption_key", "inference-config.execution-provider-options.encryption_key"},
         {"ai_analyzer_visualization", "inference-config.execution-provider-options.ai_analyzer_visualization"},
         {"ai_analyzer_profiling", "inference-config.execution-provider-options.ai_analyzer_profiling"}};
@@ -618,6 +646,21 @@ static void setup_vitis_ai_execution_provider(Ort::SessionOptions& session_optio
     for (const auto& [option_name, config_key] : option_keys) {
       if (auto opt = config.get_optional<std::string>(config_key)) {
         options[option_name] = *opt;
+      }
+    }
+    // Backward-compatibility pass: only fills in options not already set above,
+    // so the legacy underscored key never overrides a hyphenated one. Logs a
+    // debug diagnostic if both spellings are present, since the legacy one is
+    // silently ignored.
+    for (const auto& [option_name, config_key] : legacy_option_keys) {
+      if (auto opt = config.get_optional<std::string>(config_key)) {
+        if (options.find(option_name) == options.end()) {
+          options[option_name] = *opt;
+        } else {
+          APP_LOG(AppLogLevel::DEBUG, log_level,
+                  "Both hyphenated and legacy underscored keys given for '%s'; using the hyphenated value.",
+                  option_name.c_str());
+        }
       }
     }
     session_options.AppendExecutionProvider_VitisAI(options);
@@ -635,8 +678,9 @@ static void setup_vitis_ai_execution_provider(Ort::SessionOptions& session_optio
  * configures the execution provider (CPU or Vitis AI) based on the JSON configuration,
  * and prepares input and output tensor metadata.
  *
- * The function only supports models with a single input tensor, a single output tensor,
- * and batch size of 1. If the model does not meet these constraints, initialization fails.
+ * The function only supports models with a single input tensor and a single
+ * output tensor. If the model does not meet these constraints, initialization
+ * fails. Batch size may be greater than 1 (static or dynamic; see README).
  *
  * @param pipeline_ctx Pointer to the pipeline context to initialize.
  * @param log_level Application log level for logging.
@@ -677,8 +721,19 @@ bool create_inference_context(PipelineContext* pipeline_ctx,
         setup_vitis_ai_execution_provider(session_options, config, log_level);
 
         /* Store VitisAI config file path for batch processing */
-        pipeline_ctx->vitisai_config_file_path =
-            config.get<std::string>("inference-config.execution-provider-options.config_file");
+        {
+          auto vitisai_config_file_node =
+              config.get_optional<std::string>("inference-config.execution-provider-options.config-file");
+          if (!vitisai_config_file_node) {
+            vitisai_config_file_node =
+                config.get_optional<std::string>("inference-config.execution-provider-options.config_file");
+          }
+          if (!vitisai_config_file_node) {
+            throw std::runtime_error(
+                "Missing required field: inference-config.execution-provider-options.config-file");
+          }
+          pipeline_ctx->vitisai_config_file_path = *vitisai_config_file_node;
+        }
         break;
       default:
         std::string err_msg = "Unknown execution provider: " + execution_provider + ". Valid providers: CPU, VitisAI";
@@ -867,7 +922,6 @@ bool create_inference_context(PipelineContext* pipeline_ctx,
       model_info->out_tensors_info[i].meta.type = ort_tensor_info.GetElementType();
       model_info->out_tensors_info[i].meta.data_type = map_onnx_data_type(model_info->out_tensors_info[i].meta.type);
       model_info->out_tensors_info[i].meta.size_in_bytes = get_tensor_size_in_bytes(ort_tensor_info, model_batch_size);
-      /* TODO create a tensor in runtime wrapped with data required by postprocessing */
       auto tensor = Ort::Value::CreateTensor(
           model_info->allocator, model_info->out_tensors_info[i].meta.shape_i64.data(),
           model_info->out_tensors_info[i].meta.shape_i64.size(), model_info->out_tensors_info[i].meta.type);

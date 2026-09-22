@@ -21,6 +21,11 @@
 #include <assert.h>
 #include "image_processing.h"
 
+// To save BRAM resources, opt out with -DWIDE_RGBP_FLOAT_SUPPORT=0.
+#ifndef WIDE_RGBP_FLOAT_SUPPORT
+#define WIDE_RGBP_FLOAT_SUPPORT 1
+#endif
+
 //#define DBG_PRINT
 const U8 rgb = 0;
 const U8 yuv444 = 1;
@@ -970,26 +975,54 @@ static void v_scaler_top(
 	int WidthInBytes;
 	int WidthOutBytes;
 
+#if (WIDE_RGBP_FLOAT_SUPPORT == 1)
 	const int PLANE_STREAM_DEPTH0 = 8 * PLANE0_STREAM_DEPTH;
+#else
+	const int PLANE_STREAM_DEPTH0 = 2 * PLANE0_STREAM_DEPTH;
+#endif
 	STREAM_BYTES srcPlane0, dstPlane0;
+#if (WIDE_RGBP_FLOAT_SUPPORT == 1)
 #pragma HLS BIND_STORAGE variable=srcPlane0 type=fifo impl=bram
+#else
+#pragma HLS BIND_STORAGE variable=srcPlane0 type=fifo impl=lutram
+#endif
 #pragma HLS STREAM variable=srcPlane0 depth=PLANE_STREAM_DEPTH0
+#if (WIDE_RGBP_FLOAT_SUPPORT == 1)
 #pragma HLS BIND_STORAGE variable=dstPlane0 type=fifo impl=bram
+#else
+#pragma HLS BIND_STORAGE variable=dstPlane0 type=fifo impl=lutram
+#endif
 #pragma HLS STREAM variable=dstPlane0 depth=PLANE_STREAM_DEPTH0
 
 #if ((MAX_NR_PLANES==2) || (MAX_NR_PLANES==3))
 	STREAM_BYTES srcPlane1, dstPlane1;
+#if (WIDE_RGBP_FLOAT_SUPPORT == 1)
 #pragma HLS BIND_STORAGE variable=srcPlane1 type=fifo impl=bram
+#else
+#pragma HLS BIND_STORAGE variable=srcPlane1 type=fifo impl=lutram
+#endif
 #pragma HLS STREAM variable=srcPlane1 depth=PLANE_STREAM_DEPTH0
+#if (WIDE_RGBP_FLOAT_SUPPORT == 1)
 #pragma HLS BIND_STORAGE variable=dstPlane1 type=fifo impl=bram
+#else
+#pragma HLS BIND_STORAGE variable=dstPlane1 type=fifo impl=lutram
+#endif
 #pragma HLS STREAM variable=dstPlane1 depth=PLANE_STREAM_DEPTH0
 #endif
 
 #if (MAX_NR_PLANES==3)
 	STREAM_BYTES srcPlane2, dstPlane2;
+#if (WIDE_RGBP_FLOAT_SUPPORT == 1)
 #pragma HLS BIND_STORAGE variable=srcPlane2 type=fifo impl=bram
+#else
+#pragma HLS BIND_STORAGE variable=srcPlane2 type=fifo impl=lutram
+#endif
 #pragma HLS STREAM variable=srcPlane2 depth=PLANE_STREAM_DEPTH0
+#if (WIDE_RGBP_FLOAT_SUPPORT == 1)
 #pragma HLS BIND_STORAGE variable=dstPlane2 type=fifo impl=bram
+#else
+#pragma HLS BIND_STORAGE variable=dstPlane2 type=fifo impl=lutram
+#endif
 #pragma HLS STREAM variable=dstPlane2 depth=PLANE_STREAM_DEPTH0
 #endif
 
@@ -1013,7 +1046,11 @@ static void v_scaler_top(
 #pragma HLS stream depth=16 variable=stream_in
 #pragma HLS stream depth=16 variable=stream_1
 #pragma HLS stream depth=16 variable=stream_2
+#if (WIDE_RGBP_FLOAT_SUPPORT == 1)
 #pragma HLS stream depth=8192 variable=stream_3
+#else
+#pragma HLS stream depth=4096 variable=stream_3
+#endif
 #pragma HLS stream depth=16 variable=stream_4
 #pragma HLS stream depth=16 variable=stream_4_csc
 #pragma HLS stream depth=16 variable=stream_5

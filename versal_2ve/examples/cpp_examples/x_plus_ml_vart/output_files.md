@@ -38,7 +38,7 @@ Binary OFM file layout:
 - One file per output tensor, not per batch element or per frame.
 - The first frame creates/truncates the file; subsequent frames in the same iteration append.
 - Multi-frame and batched inputs concatenate sequentially into the same file.
-- For models with batch size `N > 1`, each inference call appends `N` frames per output tensor in the same order as the corresponding input batch. The per-frame size is the `vart::Runner`-reported per-tensor `size_in_bytes` (query with `ml_vart --get-model-info <model-path>`; the same dump exposes `batch_size` for `N`). Partial-batch runs at end-of-file only append the slots that were actually populated.
+- For models with batch size `N > 1`, each inference call appends `N` frames per output tensor in the same order as the corresponding input batch. The per-frame size is the `vart::Runner`-reported per-tensor `size_in_bytes` (query with `ml_vart --get-model-info <model-path>`; the same dump exposes `input_batch_size` for `N`). Partial-batch runs at end-of-file only append the slots that were actually populated.
 
 ## Example output trees
 

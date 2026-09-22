@@ -1,0 +1,16 @@
+{
+    "inference-config": {
+        "model-file": "yolox_nano_onnx_pt_regular_conv/yolox_nano_onnx_pt_regular_conv.rai",
+        "runner-options": {
+            "log-level": "WARNING",
+            "ai-analyzer-profiling": true
+        }
+    },
+    "ifms-config": [
+        {
+            "name": "onnx::DequantizeLinear_229",
+            "file": "inputSubBO_vaiml_par_0_id_0_0_0_trim.bin"
+        }
+    ],
+    "ofms-dir": "output"
+}

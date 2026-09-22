@@ -153,8 +153,6 @@ In addition to the [Common Fields](#common-fields):
 | `is-obj-score-included`               | string/bool      | No         | `false`                  | Whether an objectness score is included in the model output              |
 | `grid-shape`                          | array of arrays  | Yes        | —                        | Grid shape `[H, W]` for each output scale                                |
 | `anchors`                             | array of arrays  | No         | `[]` (no anchors)        | Anchor box dimensions for each output scale                              |
-| `input-layout`                        | array of strings | Yes        | —                        | Layout of each input tensor (`NCHW`, `NHWC`, `HCWNC4`)                   |
-| `output-layout`                       | array of strings | Yes        | —                        | Layout of each output tensor (`NCHW`, `NHWC`, `NCH`, `NHC`)              |
 | `is-scaling-required`                 | string/bool      | No         | `false`                  | Whether bbox coordinates need to be scaled to the input image size       |
 | `apply-sigmoid-to-obj-conf`           | string/bool      | No         | `false`                  | Whether to apply sigmoid to objectness/class scores during decoding      |
 | `num-anchorboxes`                     | array of integers| No         | `[]` (no anchor boxes)   | Number of anchor boxes for each output scale                             |
@@ -173,8 +171,6 @@ In addition to the [Common Fields](#common-fields):
     "is-obj-score-included": "true",
     "grid-shape": [[13, 13]],
     "anchors": [[0.57, 0.67, 1.87, 2.06, 3.33, 5.47, 7.88, 3.52, 9.77, 9.16]],
-    "input-layout": ["NCHW"],
-    "output-layout": ["NCHW"],
     "is-scaling-required": "true",
     "apply-sigmoid-to-obj-conf": "false",
     "num-anchorboxes": [5]

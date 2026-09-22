@@ -84,14 +84,14 @@ python jpeg_to_binary.py -i <input.jpg> -f <format> [options]
 
 | Data Type   | Description                                   |
 | ----------- | --------------------------------------------- |
-| `INT8`      | 8-bit signed integer (default)                |
-| `FP16`      | IEEE 754 half-precision floating point        |
+| `INT8`      | 8-bit signed integer                          |
+| `FP16`      | IEEE 754 half-precision floating point (default) |
 | `FP32`      | IEEE 754 single-precision floating point      |
 | `BF16`      | Brain floating point (truncated float32)      |
 
 ### Examples
 
-1. **Simple RGB conversion** (no resize, default int8):
+1. **Simple RGB conversion** (no resize, default FP16):
 
 ```bash
 python jpeg_to_binary.py -i cat.jpg -f RGB

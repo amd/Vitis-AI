@@ -1,0 +1,77 @@
+reserved-memory:
+  ranges: true
+  "#size-cells": 2
+  "#address-cells": 2
+
+  plm_reserved_memory@00000000:
+    label: plm_reserved_memory
+    no-map: true
+    start: 0x00000000
+    size: 16M
+  tfa_reserved_memory@1000000:
+    label: tfa_reserved_memory
+    no-map: true
+    start: 0x01000000
+    size: 6M
+  bl31_reserved_memory@1600000:
+    label: bl31_reserved_memory
+    no-map: true
+    start: 0x01600000
+    size: 2M
+
+  rpu_fw_boot@1800000:
+    label: rpu_fw_boot
+    no-map: true
+    start: 0x01800000
+    size: 4M
+  rpu_fw_scratch0@1c00000:
+    label: rpu_fw_scratch0
+    no-map: true
+    start: 0x01C00000
+    size: 256K
+  rpu_fw_rsctbl@1c40000:
+    label: rpu_fw_rsctbl
+    no-map: true
+    start: 0x01C40000
+    size: 4K
+  rpu_fw_scratch1@1c41000:
+    label: rpu_fw_scratch1
+    no-map: true
+    start: 0x01C41000
+    size: 0x2BF000
+
+  rpu_app_boot@1f00000:
+    label: rpu_app_boot
+    no-map: true
+    start: 0x01F00000
+    size: 0x0A100000
+
+  rpu_gem_cma@20000000:
+    label: rpu_cma
+    start: 0x20000000
+    size: 512M
+    compatible: "shared-dma-pool"
+    reusable: true
+
+  buffer@50000000000:
+    label: app_bank0
+    start: 0x50000000000
+    size: 8G
+    compatible: "shared-dma-pool"
+    reusable: true
+    linux,cma-default: true
+
+domains:
+  APU_Linux:
+    compatible: openamp,domain-v1
+    reserved-memory:
+      - plm_reserved_memory@00000000
+      - tfa_reserved_memory@1000000
+      - bl31_reserved_memory@1600000
+      - rpu_fw_boot@1800000
+      - rpu_fw_scratch0@1c00000
+      - rpu_fw_rsctbl@1c40000
+      - rpu_fw_scratch1@1c41000
+      - rpu_app_boot@1f00000
+      - rpu_gem_cma@20000000
+      - buffer@50000000000

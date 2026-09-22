@@ -53,6 +53,7 @@ VAIML_DEP = " \
         cert-ve2 \
         vaiml-models \
         vaiprofile-collect-data \
+        mldebug-xdp \
 "
 
 RDEPENDS:${PN} = "${VAIML_DEP}"

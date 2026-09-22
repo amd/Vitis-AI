@@ -16,7 +16,7 @@ This document explains the structure and usage of the `ml_ort_config.json` file 
 
 ## Overview
 
-The JSON file contains an object called `inference-config`, where each element describes the configuration for a single model inference session. Each session run requires the model file, input feature map (IFM) configuration, and execution provider options.
+The JSON file contains a single object called `inference-config` that describes one model inference session. The session requires the model file, input feature map (IFM) configuration, and execution provider options.
 
 Let us consider the following example of a matrix multiplication model, which accepts two input feature maps (IFMs). The input names of the ONNX model are input0 and input1, respectively.
 
@@ -24,32 +24,30 @@ Let us consider the following example of a matrix multiplication model, which ac
 
 ```json
 {
-  "inference-config": [
-    {
-      "model-file": "MatMul.onnx",
-      "ifms-config": [
-        {
-          "name": "input0",
-          "file": "input0_float32_2x3.bin"
-        },
-        {
-          "name": "input1",
-          "file": "input1_float32_3x4.bin"
-        }
-      ],
-      "execution-provider-options": {
-        "config_file": "vitisai_config.json",
-        "target": "VAIML",
-        "cache_dir": "my_cache_dir",
-        "cache_key": "MatMul"
+  "inference-config": {
+    "model-file": "MatMul.onnx",
+    "ifms-config": [
+      {
+        "name": "input0",
+        "file": "input0_float32_2x3.bin"
+      },
+      {
+        "name": "input1",
+        "file": "input1_float32_3x4.bin"
       }
+    ],
+    "execution-provider-options": {
+      "config-file": "vitisai_config.json",
+      "target": "VAIML",
+      "cache-dir": "my_cache_dir",
+      "cache-key": "MatMul"
     }
-  ]
+  }
 }
 
 ```
 
-#### Description of inference config Array
+#### Description of the `inference-config` object
 
 | Field                        | Type              | Description                                                                 | Example Value                 |
 |------------------------------|-------------------|-----------------------------------------------------------------------------|-------------------------------|
@@ -73,8 +71,8 @@ Let us consider the following example of a matrix multiplication model, which ac
 
 | Field        | Type   | Description                                                             | Example Value                |
 |--------------|--------|-------------------------------------------------------------------------|------------------------------|
-| config_file  | String | Path to provider config file                                            | `"vitisai_config.json"`      |
+| config-file  | String | Path to provider config file                                            | `"vitisai_config.json"`      |
 | target       | String | Target hardware platform for VitisAI execution provider                 | `"VAIML"`                    |
-| cache_dir    | String | The path and name of the cache directory.                               |`"my_cache_dir"`              |
-| cache_key    | String | The subfolder in the cache directory where the compiled model is stored | `"resnet50_quantized_xint8"` |
+| cache-dir    | String | The path and name of the cache directory.                               |`"my_cache_dir"`              |
+| cache-key    | String | The subfolder in the cache directory where the compiled model is stored | `"resnet50_quantized_xint8"` |
 

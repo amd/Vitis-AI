@@ -7,7 +7,6 @@
     "scale-g": 1.0,
     "scale-b": 1.0,
     "colour-format": "RGBX",
-    "maintain-aspect-ratio": false,
     "resizing-type": "LETTERBOX",
     "in-mem-bank": 2,
     "out-mem-bank": 2
@@ -15,7 +14,6 @@
   "inference-config": {
     "model-file": "/etc/vai/models/yolox_m_int8/yolox_m_int8.rai",
     "runner-options": {
-      "config-file": "/etc/vai/models/yolox_m_int8/vitisai_config.json",
       "log-level": "WARNING"
     }
   },
@@ -51,13 +49,7 @@
       "num-anchorboxes" : [],
       "anchors": [],
       "is-scaling-required" : "true",
-      "apply-sigmoid-to-obj-conf" : "false",
-      "input-layout": [
-        "HCWNC4"
-      ],
-      "output-layout": [
-        "NHC"
-      ]
+      "apply-sigmoid-to-obj-conf" : "false"
     }
   },
   "metaconvert-config": {

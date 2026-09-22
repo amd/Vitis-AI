@@ -34,9 +34,25 @@ usage() {
 
 ABS_PATH=$(pwd)
 
-# Set it to 1 to disable amd-edf user
-disable_amd_edf=0
+# Load build configuration switches (MIPI, NPU_FW) from rev-b/build.cfg.
+# build.cfg is authoritative: it is sourced last so its values win over any
+# inherited/exported env values. Env is used only as a fallback when build.cfg
+# is missing (or omits a key); defaults apply otherwise.
+BUILD_CFG="$ABS_PATH/../../build.cfg"
+MIPI=${MIPI:-0}
+NPU_FW=${NPU_FW:-0}
+if [ -f "$BUILD_CFG" ]; then
+  source "$BUILD_CFG"
+fi
+
+# NPU_FW is not supported for this release.
+if [ "$NPU_FW" -eq 1 ]; then
+  echo "ERROR: NPU_FW=1 is not supported for this release. Exiting."
+  return 1 2>/dev/null || exit 1
+fi
+
 VITIS_AI_LAYER="meta-vitis-ai"
+VEK385_LAYER="meta-vek385"
 build_image=0
 build_sdk=0
 clean_build=0
@@ -103,37 +119,65 @@ if [[ "$src_fs_type" == "nfs" || ! -z "${YOCTO_TMP_DIR}" ]]; then
   ${LOCAL_CONF_PATH}
 fi
 
-
-### This is to enter as root user, will remove this patch in release #######
-if [ $disable_amd_edf -eq 1 ] ; then
-  # Check if EXTRA_IMAGE_FEATURES is already defined
-  if grep -q '^#*EXTRA_IMAGE_FEATURES' "$LOCAL_CONF_PATH"; then
-    # Replace existing line (whether commented or not)
-    sed -i \
-      's|^#*EXTRA_IMAGE_FEATURES.*|EXTRA_IMAGE_FEATURES ?= "debug-tweaks"|' \
-      "$LOCAL_CONF_PATH"
-  else
-    # Append if not found
-    echo 'EXTRA_IMAGE_FEATURES ?= "debug-tweaks"' >> "$LOCAL_CONF_PATH"
-  fi
-fi
+# Preserve the MIPI/NPU_FW platform selection after local.conf regeneration.
+echo "MIPI = \"$MIPI\"" >> "$LOCAL_CONF_PATH"
+echo "NPU_FW = \"$NPU_FW\"" >> "$LOCAL_CONF_PATH"
 
 # Add vitis-ai layer
 if [ ! -d $ABS_PATH/sources/$VITIS_AI_LAYER ]; then
   bitbake-layers create-layer $ABS_PATH/sources/$VITIS_AI_LAYER
   rm -rf $ABS_PATH/sources/$VITIS_AI_LAYER/recipes-example
   rm -rf $ABS_PATH/sources/$VITIS_AI_LAYER/COPYING.MIT
+
+  # Single source layer now (meta-vitis-ai). NPU_FW-specific recipe variants
+  # live alongside their base counterparts as *-npufw sibling folders
+  # (recipes-amdrnpu-npufw, recipes-core-npufw, recipes-kernel-npufw,
+  # recipes-xrt-npufw). Select which set applies after copying.
   cp -rf $ABS_PATH/meta-vitis-ai/* $ABS_PATH/sources/$VITIS_AI_LAYER/
+
+  NPUFW_RECIPE_DIRS="recipes-amdrnpu recipes-core recipes-kernel recipes-xrt"
+  for d in $NPUFW_RECIPE_DIRS; do
+    NPUFW_DIR="$ABS_PATH/sources/$VITIS_AI_LAYER/${d}-npufw"
+    BASE_DIR="$ABS_PATH/sources/$VITIS_AI_LAYER/${d}"
+    if [ "$NPU_FW" -eq 1 ]; then
+      # Swap in the NPU_FW variant in place of the base recipes. recipes-amdrnpu
+      # has no base counterpart, so BASE_DIR is a harmless no-op to remove.
+      rm -rf "$BASE_DIR"
+      mv "$NPUFW_DIR" "$BASE_DIR"
+    else
+      # Not building NPU_FW: drop the unused variant folder.
+      rm -rf "$NPUFW_DIR"
+    fi
+  done
+
   bitbake-layers add-layer $ABS_PATH/sources/$VITIS_AI_LAYER
+fi
+
+# Add vek385 board-specific layer
+if [ ! -d $ABS_PATH/sources/$VEK385_LAYER ]; then
+  bitbake-layers create-layer $ABS_PATH/sources/$VEK385_LAYER
+  rm -rf $ABS_PATH/sources/$VEK385_LAYER/recipes-example
+  rm -rf $ABS_PATH/sources/$VEK385_LAYER/COPYING.MIT
+  cp -rf $ABS_PATH/meta-vek385/* $ABS_PATH/sources/$VEK385_LAYER/
+  bitbake-layers add-layer $ABS_PATH/sources/$VEK385_LAYER
 fi
 
 cat << 'EOF' >> "$LOCAL_CONF_PATH"
 
-IMAGE_INSTALL:append = "packagegroup-vaiml"
+VEK385_AIE_VARIANT ?= "TessAI"
+IMAGE_INSTALL:append = " packagegroup-vaiml vek385-board-setup"
+IMAGE_INSTALL:append = " kernel-module-hdmi21 v4l-utils packagegroup-xilinx-gstreamer libdrm libdrm-tests media-ctl dfx-mgr"
+IMAGE_INSTALL:append = " isp-firmware"
+IMAGE_INSTALL:append = " isp-media-server"
 PACKAGECONFIG:append:pn-gdb = " tui"
 TOOLCHAIN_HOST_TASK:append = " nativesdk-python3-pip nativesdk-python3-numpy nativesdk-python3-setuptools nativesdk-python3-build nativesdk-python3-wheel nativesdk-python3-protobuf nativesdk-python3-pybind11 nativesdk-protobuf "
-TOOLCHAIN_TARGET_TASK:append = " ryzenai-wheels-dev opencv-dev jansson-dev vart-ml-dev vvas-utils-dev vvas-gst-plugins-dev vart-x-dev hip-dev"
 EOF
+
+if [ "$NPU_FW" -eq 1 ]; then
+  echo 'TOOLCHAIN_TARGET_TASK:append = " ryzenai-wheels-dev opencv-dev jansson-dev vart-ml-dev vvas-utils-dev vvas-gst-plugins-dev vart-x-dev hip-dev amdrnpu-dev"' >> "$LOCAL_CONF_PATH"
+else
+  echo 'TOOLCHAIN_TARGET_TASK:append = " ryzenai-wheels-dev opencv-dev jansson-dev vart-ml-dev vvas-utils-dev vvas-gst-plugins-dev vart-x-dev"' >> "$LOCAL_CONF_PATH"
+fi
 
 if [ $build_image -eq 1 ]; then
   echo "Building rootfs and kernel Image..."
@@ -152,7 +196,7 @@ if [ $build_image -eq 1 ]; then
   YOCTO_deploy="$YOCTO_TMP_DIR/deploy"
   fi
 
-  BOOTBIN_IMAGE_PATH="$YOCTO_deploy/images/versal2-vek385-sdt-full"
+  BOOTBIN_IMAGE_PATH="$YOCTO_deploy/images/versal-2ve-2vm-vek385-revb-multidomain"
   BUILD_OUTPUT_DIR="$ABS_PATH/../../artifact/amd/boot_images"
   if [ ! -d "$BUILD_OUTPUT_DIR" ]; then
     echo "Build directory does not exist. Creating: $BUILD_OUTPUT_DIR"
@@ -165,13 +209,20 @@ if [ $build_image -eq 1 ]; then
   if [ -d "$BOOTBIN_IMAGE_PATH" ]; then
     # Copy BOOT Image
     IMAGE_FILE=$(find "$BOOTBIN_IMAGE_PATH" \
-        -name "BOOT-versal2-vek385-sdt-full.bin")
+        -name "BOOT-versal-2ve-2vm-vek385-revb-multidomain.bin")
     if [ -f "$IMAGE_FILE" ]; then
       cp -Lf "$IMAGE_FILE" "$BUILD_OUTPUT_DIR/BOOT.bin"
-      cp -Lf "$IMAGE_FILE" \
-        "$BUILD_OUTPUT_DIR/edf-ospi-versal2-vek385-sdt-full.bin"
     else
-      echo "No BOOT-versal2-vek385-sdt-full.bin image found."
+      echo "No BOOT-versal-2ve-2vm-vek385-revb-multidomain.bin image found."
+    fi
+    # Copy OSPI BOOT Image
+    OSPI_FILE=$(find "$BOOTBIN_IMAGE_PATH" \
+        -name "edf-ospi-versal-2ve-2vm-vek385-revb-multidomain.bin")
+    if [ -f "$OSPI_FILE" ]; then
+      cp -Lf "$OSPI_FILE" \
+        "$BUILD_OUTPUT_DIR/edf-ospi-versal-2ve-2vm-vek385-revb-multidomain.bin"
+    else
+      echo "No edf-ospi-versal-2ve-2vm-vek385-revb-multidomain.bin image found."
     fi
 
   else
@@ -227,7 +278,6 @@ fi
 if [ $build_sdk -eq 1 ]; then
   echo "Building SDK..."
   #build sdk
-  #if MACHINE=versal2-vek385-sdt-full bitbake meta-edf-app-sdk; then
   if MACHINE=amd-cortexa78-mali-common bitbake meta-edf-app-sdk; then
     echo "Yocto SDK Build successfully"
   else

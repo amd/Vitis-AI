@@ -21,7 +21,7 @@ In addition, this tutorial includes scripts for evaluating model accuracy on bot
 
 To build the example and deploy it on board, the following software and hardware are required:
 
-* Vitis AI 6.2 Docker for Versal AI Edge Series Gen 2:
+* Vitis AI 6.3 Docker for Versal AI Edge Series Gen 2:
     * Instructions for installation and startup are in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
 * VEK385 evaluation kit:
     * Setup instructions are available in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
@@ -46,26 +46,15 @@ Adjust the access permissions of the working directories on the host machine:
 chmod -R a+w <path/to/resnet50_quark>
 ```
 
-Load the docker image: 
-
-```
-docker load -i <docker_image_file>.tgz
-```
-
-Run `docker images` to verify docker REPOSITORY, IMAGEID and TAG information. 
-
-|REPOSITORY          | TAG               | IMAGE ID    | CREATED       | SIZE   |
-|--------------------|-------------------|-------------|---------------|--------|
-|vitis_ai_2ve_docker | release_v6.2      |   ??????    |  xx hours ago | 39.1GB |
-
-Star the docker: 
+Refer to Vitis AI User Guide for Versal AI Edge Series Gen 2 to load and start docker:
 
 ```
 docker run -it --network host \  
   -v /path/to/your/license:/usr/licenses \  
-  -v $PWD/resnet50_quark:/resnet50_quark \  
-  --rm vitis_ai_2ve_docker:release_v6.2  "bash"
+  -v /<host_path>:/<path_in_docker> \  
+  --rm <REPOSITORY>:<TAG>  "bash"
 ```
+
 ## Evaluate the Float Model Accuracy with ImageNet Dataset
 
 Evaluate the float model accuracy before quantization and deployment:
@@ -267,7 +256,6 @@ INFO: [VAIP-VAIML-PASS] No. of Operators :
 INFO:  VAIML     491
 INFO: [VAIP-VAIML-PASS] No. of Subgraphs :
 INFO:    NPU     1
-INFO: [VAIP-VAIML-PASS] For detailed compilation results, please refer to my_cache_dir/resnet50-v1-12_quantized/final-vaiml-pass-summary.txt
 ```
 
 You can get more details about the compilation results by displaying the content of ``my_cache_dir/resnet50-v1-12_quantized/final-vaiml-pass-summary.txt`` :
@@ -275,12 +263,28 @@ You can get more details about the compilation results by displaying the content
 ```
 --------- Final Summary of VAIML Pass ----------
 OS: Linux X64
-VAIP commit: bd5c863c3084e7534f5cd59173c631bb8fa07491
-Model: /Resnet/models/resnet50-v1-12_quantized.onnx
-Model signature: 5633833a66fc76d4758bcb34d9f75ee3
-Device: ve2-xc2ve3858
-Model data type: int8 quantized
-Device data type: int8
+Model: ....../resnet50-v1-12_quantized.onnx
+Model signature: ......
+
+Compiler Information
+  Target Device: ve2 (part number: xc2ve3858)
+  Device Data Type: int8
+  Flow: default
+  Version: VAIP ......
+  FlexML Version: rai_*_* (hash: ......, built: 2026-**-**-**:**:**)
+  Overlay: aie2_6x4x4.yaml
+  NPU Frequency: 1267 MHz
+  AIE Single Core Compiler: peano
+  Recipes: mlopslib
+  DP size: 1
+  TP size: 0
+  Preemption: disabled
+  Model data type: int8 quantized
+
+Quantization Information
+  Tool: quark.onnx
+  ONNX Inference Tool: onnxruntime.quant
+  Quark Opset: 1
 Number of operators in the model: 493
 GOPs of the model: 8.09703
 Number of operators supported by VAIML: 491 (99.594%)
@@ -289,14 +293,24 @@ Number of subgraphs supported by VAIML: 1
 Number of operators offloaded by VAIML: 491 (99.594%)
 GOPs offloaded by VAIML: 8.096 (99.993%)
 Number of subgraphs offloaded by VAIML: 1
+Number of partitions offloaded to NPU: 1
+Number of partitions executed on CPU: 0
 Number of subgraphs with compilation errors (fall back to CPU): 0
 Number of subgraphs below 20% GOPs threshold (fall back to CPU): 0
 Number of subgraphs above max number of subgraphs allowed(7): 0 (fall back to CPU)
 Stats for offloaded subgraphs
-Subgraph vaiml_par_0 stats:
+Subgraph vaiml_par_0 stats: 
     Type: npu
     Operators: 491 (99.594%)
     GOPs : 8.096 (99.993%)  OPs: 8,096,419,216
+    int8 ops %: 95.536
+
+Compilation Information
+  Frontend (FE): 29.5 s (7.0%)
+  Backend (BE): 386.8 s (92.2%)
+    AIE Compile: 165.7 s (39.5%)
+  Overhead (partitioner, cache, etc.): 3.2 s (0.8%)
+  Total: 419.5 s
 ```
 
 
@@ -322,18 +336,16 @@ python runmodel.py
 The output includes the number of operators offloaded to the NPU and the number of NPU-executed subgraphs:
 
 ```
-I20380419 04:55:16.083313  2046 stat.cpp:193] [Vitis AI EP] No. of Operators :
-I20380419 04:55:16.083366  2046 stat.cpp:204]  VAIML   491
-I20380419 04:55:16.083384  2046 stat.cpp:204] VITIS_EP_CPU     2
-I20380419 04:55:16.083395  2046 stat.cpp:213]
-I20380419 04:55:16.083404  2046 stat.cpp:218] [Vitis AI EP] No. of Subgraphs :
-I20380419 04:55:16.083410  2046 stat.cpp:226]    NPU     1
-I20380419 04:55:16.083419  2046 stat.cpp:229] Actually running on NPU      1
-I20380419 04:55:16.088616  2046 vitisai_compile_model.cpp:1477] AVG CPU Usage 93.3333%
-I20380419 04:55:16.088671  2046 vitisai_compile_model.cpp:1478] Peak Working Set size 129.445 MB
-2038-04-19 04:55:16.093139780 [W:onnxruntime:, session_state.cc:1316 VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.
-2038-04-19 04:55:16.093185510 [W:onnxruntime:, session_state.cc:1318 VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.
-[2038-04-19 04:55:16.146] [console] [info] [FLEXMLRT] FlexMLClient.cpp:1269 FlexMLRT Git Hash: 512d4e65
+I20260908 03:20:31.139182  5897 stat.cpp:198] [Vitis AI EP] No. of Operators :
+I20260908 03:20:31.139227  5897 stat.cpp:198]  VAIML   491 
+I20260908 03:20:31.139240  5897 stat.cpp:198] VITIS_EP_CPU     2 
+I20260908 03:20:31.139250  5897 stat.cpp:198] 
+I20260908 03:20:31.139259  5897 stat.cpp:198] [Vitis AI EP] No. of Subgraphs :
+I20260908 03:20:31.139266  5897 stat.cpp:198]    NPU     1 
+I20260908 03:20:31.139271  5897 stat.cpp:198] Actually running on NPU      1
+I20260908 03:20:31.145162  5897 vitisai_compile_model.cpp:1492] AVG CPU Usage 88.8889%
+I20260908 03:20:31.145206  5897 vitisai_compile_model.cpp:1493] Peak Working Set size 172.602 MB
+......
 Inference done
 ```
 

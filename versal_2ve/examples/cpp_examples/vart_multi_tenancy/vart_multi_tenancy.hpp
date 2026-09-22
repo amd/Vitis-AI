@@ -28,7 +28,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <any>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -49,6 +51,8 @@
 
 #include <vart/vart_npu_tensor.hpp>
 #include <vart/vart_runner_factory.hpp>
+
+#include "common/app_utils.hpp"
 
 namespace po = boost::program_options;
 using boost::property_tree::ptree;
@@ -106,6 +110,19 @@ inline void log_error(Args&&... args) {
   (std::cerr << ... << std::forward<Args>(args)) << '\n';
 }
 
+/**
+ * @brief Thread-safe debug log
+ * @details Fold expression, mutex-guarded, appends newline.
+ *          Suppressed when g_verbose < 3.
+ */
+template <typename... Args>
+inline void log_debug(Args&&... args) {
+  if (g_verbose < 3)
+    return;
+  std::lock_guard<std::mutex> lk(g_cout_mutex);
+  (std::cout << ... << std::forward<Args>(args)) << '\n';
+}
+
 // Forward declaration – needed by utils::validate_model_ifms().
 class VartMultiTenancy;
 
@@ -132,13 +149,19 @@ class utils {
    * own defaults.
    */
   struct ModelConfig {
-    std::string model_cache_path;  // "model_cache_path"
-    uint32_t start_column = 0;     // "start_column" – starting NPU column
+    std::string model_cache_path;  // "model-cache-path"
+    uint32_t start_column = 0;     // "start-column" – starting NPU column
     bool is_start_column_provided = false;
-    bool aie_columns_sharing = true;  // "aie_columns_sharing" – true=shared/temporal, false=exclusive/spatial
+    bool aie_columns_sharing = true;  // "aie-columns-sharing" – true=shared/temporal, false=exclusive/spatial
     bool is_columns_sharing_provided = false;
+    // "input-tensor-type" / "output-tensor-type" – "CPU" or "HW". Selects the
+    // tensor view used to create the runner. A model that has a CPU subgraph at
+    // its input (or output) boundary must use "CPU" for that direction; "HW"
+    // would cause runner creation to fail. Defaults to "HW".
+    std::string input_tensor_type = "HW";
+    std::string output_tensor_type = "HW";
     std::unordered_map<std::string, std::string> ifm_node_file_map;  // tensor name → full IFM file path
-    std::string ofm_dir;                                             // "ofm_dir"  – directory to save OFM files
+    std::string ofm_dir;                                             // "ofm-dir"  – directory to save OFM files
   };
 
   /**
@@ -188,10 +211,12 @@ class utils {
 
   /**
    * @brief Parse a single model ptree node into a ModelConfig.
-   * @details Extracts model_cache_path, start_column, aie_columns_sharing,
-   *          ofm_dir, and ifm_node_file_map from the given JSON node. Throws
-   *          std::runtime_error if the required field model_cache_path is
-   *          missing.
+   * @details Extracts model-cache-path, start-column, aie-columns-sharing,
+   *          ofm-dir, and ifm-node-file-map from the given JSON node. This
+   *          hyphenated key schema is recommended; the underscored schema
+   *          (e.g. model_cache_path) is maintained for backward compatibility.
+   *          Throws std::runtime_error if the required field model-cache-path
+   *          is missing.
    * @param node   Boost.PropertyTree node representing one model entry.
    * @param index  Zero-based index of this model in the config array.
    * @return Populated ModelConfig struct.
@@ -199,35 +224,94 @@ class utils {
   static ModelConfig parse_model_entry(const ptree& node, size_t index) {
     ModelConfig cfg;
 
-    cfg.model_cache_path = node.get<std::string>("model_cache_path", "");
+    auto model_cache_path_node = node.get_optional<std::string>("model-cache-path");
+    if (!model_cache_path_node) {
+      model_cache_path_node = node.get_optional<std::string>("model_cache_path");
+    }
+    cfg.model_cache_path = model_cache_path_node ? *model_cache_path_node : "";
     if (cfg.model_cache_path.empty()) {
-      throw std::runtime_error("Model entry " + std::to_string(index) + " missing required field: model_cache_path");
+      throw std::runtime_error("Model entry " + std::to_string(index) + " missing required field: model-cache-path");
     }
 
     // start_column / aie_columns_sharing are forwarded to the VART runner
     // via the options bag in initialize() – see VartMultiTenancy::initialize().
-    auto start_col_node = node.get_optional<uint32_t>("start_column");
+    const char* start_column_key = "start-column";
+    auto start_col_node = node.get_optional<uint32_t>(start_column_key);
+    if (!start_col_node) {
+      start_column_key = "start_column";
+      start_col_node = node.get_optional<uint32_t>(start_column_key);
+    }
     if (start_col_node) {
       cfg.start_column = *start_col_node;
       cfg.is_start_column_provided = true;
 
       if (cfg.start_column > 32) {
-        std::cerr << "[ERROR] Model entry " << index << ": invalid start_column=" << cfg.start_column
-                  << ". Must be in the range 0-32.\n";
-        std::exit(1);
+        throw std::runtime_error("Model entry " + std::to_string(index) + ": invalid " + start_column_key + "=" +
+                                 std::to_string(cfg.start_column) + ". Must be in the range 0-32.");
       }
     }
 
-    auto sharing_node = node.get_optional<std::string>("aie_columns_sharing");
+    const char* sharing_key = "aie-columns-sharing";
+    auto sharing_node = node.get_optional<std::string>(sharing_key);
+    if (!sharing_node) {
+      sharing_key = "aie_columns_sharing";
+      sharing_node = node.get_optional<std::string>(sharing_key);
+    }
     if (sharing_node) {
-      const std::string& val = *sharing_node;
-      cfg.aie_columns_sharing = (val == "true" || val == "1");
+      std::string val = *sharing_node;
+      std::transform(val.begin(), val.end(), val.begin(), [](unsigned char c) { return std::tolower(c); });
+      if (val == "true" || val == "1") {
+        cfg.aie_columns_sharing = true;
+      } else if (val == "false" || val == "0") {
+        cfg.aie_columns_sharing = false;
+      } else {
+        throw std::runtime_error("Model entry " + std::to_string(index) + ": invalid " + sharing_key + "=\"" +
+                                 *sharing_node + "\". Must be \"true\"/\"1\" or \"false\"/\"0\".");
+      }
       cfg.is_columns_sharing_provided = true;
     }
-    cfg.ofm_dir = node.get<std::string>("ofm_dir", ".");
 
-    // Parse ifm_node_file_map object (optional). Values must be full file paths.
-    auto ifm_map_node = node.get_child_optional("ifm_node_file_map");
+    // input_tensor_type / output_tensor_type select the CPU vs HW tensor view
+    // used when the runner is created. Required to be "CPU" for a direction
+    // whose boundary is a CPU subgraph (otherwise runner creation fails).
+    auto normalize_tensor_type = [index](const std::string& raw, const char* field) -> std::string {
+      std::string v = raw;
+      std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::toupper(c); });
+      if (v != "CPU" && v != "HW") {
+        throw std::runtime_error("Model entry " + std::to_string(index) + ": invalid " + field + "=\"" + raw +
+                                 "\". Must be \"CPU\" or \"HW\".");
+      }
+      return v;
+    };
+    const char* input_tensor_type_key = "input-tensor-type";
+    auto input_tensor_type_node = node.get_optional<std::string>(input_tensor_type_key);
+    if (!input_tensor_type_node) {
+      input_tensor_type_key = "input_tensor_type";
+      input_tensor_type_node = node.get_optional<std::string>(input_tensor_type_key);
+    }
+    cfg.input_tensor_type =
+        normalize_tensor_type(input_tensor_type_node ? *input_tensor_type_node : "HW", input_tensor_type_key);
+
+    const char* output_tensor_type_key = "output-tensor-type";
+    auto output_tensor_type_node = node.get_optional<std::string>(output_tensor_type_key);
+    if (!output_tensor_type_node) {
+      output_tensor_type_key = "output_tensor_type";
+      output_tensor_type_node = node.get_optional<std::string>(output_tensor_type_key);
+    }
+    cfg.output_tensor_type =
+        normalize_tensor_type(output_tensor_type_node ? *output_tensor_type_node : "HW", output_tensor_type_key);
+
+    auto ofm_dir_node = node.get_optional<std::string>("ofm-dir");
+    if (!ofm_dir_node) {
+      ofm_dir_node = node.get_optional<std::string>("ofm_dir");
+    }
+    cfg.ofm_dir = ofm_dir_node ? *ofm_dir_node : ".";
+
+    // Parse ifm-node-file-map object (optional). Values must be full file paths.
+    auto ifm_map_node = node.get_child_optional("ifm-node-file-map");
+    if (!ifm_map_node) {
+      ifm_map_node = node.get_child_optional("ifm_node_file_map");
+    }
     if (ifm_map_node) {
       for (const auto& item : *ifm_map_node) {
         const std::string key = item.first;
@@ -245,7 +329,7 @@ class utils {
    * @brief Read and parse the JSON config file.
    * @details The file must contain a JSON array of model objects. After
    *          parsing, validates that no two models have overlapping NPU
-   *          columns when either model sets aie_columns_sharing to false
+   *          columns when either model sets aie-columns-sharing to false
    *          (exclusive). On conflict the application prints a diagnostic
    *          and exits. Finally prints a summary of overlay column
    *          assignments.
@@ -293,14 +377,13 @@ class utils {
 
           // Conflict: same start column but at least one is exclusive
           if (!sharing_i || !sharing_k) {
-            std::cerr << "[ERROR] Column sharing conflict between models:\n"
-                      << "  Model_" << (i + 1) << " uses start_column " << sc_i
-                      << " with aie_columns_sharing=" << (sharing_i ? "true (shared)" : "false (exclusive)") << "\n"
-                      << "  Model_" << (k + 1) << " uses start_column " << sc_k
-                      << " with aie_columns_sharing=" << (sharing_k ? "true (shared)" : "false (exclusive)") << "\n"
-                      << "Same start_column cannot be used when any model "
-                         "sets aie_columns_sharing to false (exclusive).\n";
-            std::exit(1);
+            throw std::runtime_error(
+                "Column sharing conflict between models:\n  Model_" + std::to_string(i + 1) + " uses start-column " +
+                std::to_string(sc_i) +
+                " with aie-columns-sharing=" + (sharing_i ? "true (shared)" : "false (exclusive)") + "\n  Model_" +
+                std::to_string(k + 1) + " uses start-column " + std::to_string(sc_k) +
+                " with aie-columns-sharing=" + (sharing_k ? "true (shared)" : "false (exclusive)") +
+                "\nSame start-column cannot be used when any model sets aie-columns-sharing to false (exclusive).");
           }
         }
       }
@@ -316,7 +399,7 @@ class utils {
 
       std::cout << "========== Overlay Column Assignments ==========\n";
       for (const auto& [start_col, models] : overlay_map) {
-        std::cout << "  start_column " << start_col << " : ";
+        std::cout << "  start-column " << start_col << " : ";
         for (size_t i = 0; i < models.size(); ++i) {
           if (i > 0)
             std::cout << ", ";
@@ -452,7 +535,7 @@ class utils {
    *          \u2013 random-io)" since save_ofms() is not called in dry-run
    *          mode. Defined out-of-line after VartMultiTenancy is fully
    *          declared.
-   * @param opt        Parsed options (for start_column / sharing / ofm_dir)
+   * @param opt        Parsed options (for start-column / sharing / ofm-dir)
    * @param models     Initialised model instances (for output tensor metadata)
    * @param random_io  True when --dry-run / -d dry-run mode is active
    */
@@ -625,9 +708,12 @@ class VartMultiTenancy {
    * @brief Save output feature maps (OFMs) from allocated tensors to binary files.
    * @details One file per OFM node (<node_name>_<shape>_<dtype>.bin) placed in a
    *          per-model subdirectory (ofm_model_1, ofm_model_2, ...) within ofm_dir.
-   *          Only m_actual_batch_size frames are written — if the user provided
-   *          fewer frames than the model's batch size, only those frames appear
-   *          in the output files. Creates the output directory if it does not
+   *          Writes exactly m_ofm_tensors.size() frames. When output_batch_size
+   *          equals input_batch_size (the common case), that size is
+   *          m_actual_batch_size, so a partial input batch produces a partial
+   *          OFM file too. For an asymmetric model, m_ofm_tensors always keeps
+   *          its full output_batch_size, so the complete output batch is
+   *          written every time. Creates the output directory if it does not
    *          already exist.
    * @param cfg          Model configuration containing ofm_dir.
    * @param model_index  Zero-based model index (directory is named model_index + 1).
@@ -677,9 +763,11 @@ class VartMultiTenancy {
   // Runner-allocated tensors: [batch][tensor_idx]
   std::vector<std::vector<vart::NpuTensor>> m_ifm_tensors;
   std::vector<std::vector<vart::NpuTensor>> m_ofm_tensors;
-  size_t m_batch_size = 1;         // populated by allocate_tensors() from runner->get_batch_size()
-  size_t m_actual_batch_size = 0;  // actual number of frames loaded by load_ifms() or fill_random_ifms();
-                                   // may be less than m_batch_size for partial batches
+  size_t m_input_batch_size = 1;   // populated by allocate_tensors() from runner->get_batch_size(TensorDirection::INPUT)
+  size_t m_output_batch_size = 1;  // populated by allocate_tensors() from runner->get_batch_size(TensorDirection::OUTPUT)
+  size_t m_actual_batch_size = 0;  // actual number of input frames loaded by load_ifms() or fill_random_ifms();
+                                   // may be less than m_input_batch_size for partial batches. Only sizes
+                                   // m_ifm_tensors; m_ofm_tensors always keeps its full m_output_batch_size.
   bool m_tensors_allocated = false;
 };
 
@@ -813,8 +901,8 @@ inline void utils::print_execution_summary(const Options& opt,
           joined += ", ";
         // Build the same filename that save_ofms() produces:
         // <ofm_dir>/ofm_model_<N>/<name>_<shape>_<datatype>.bin
-        std::string fname =
-            oi[j].name + "_" + shape_to_string(oi[j].shape) + "_" + data_type_to_string(oi[j].data_type) + ".bin";
+        std::string fname = sanitize_tensor_name(oi[j].name) + "_" + shape_to_string(oi[j].shape) + "_" +
+                            data_type_to_string(oi[j].data_type) + ".bin";
         std::filesystem::path p = std::filesystem::path(cfg.ofm_dir) / ("ofm_model_" + std::to_string(i + 1)) / fname;
         joined += p.string();
       }

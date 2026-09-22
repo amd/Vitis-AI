@@ -1,8 +1,11 @@
 DESCRIPTION = "VAI Profile collect-data script for XDP profiling"
 LICENSE = "Apache-2.0"
 
-SRC_URI = "git://github.com/Xilinx/MLDebugger.git;branch=vai_6_2;protocol=https;lfs=0"
-SRCREV = "35ab0a57095fa67604e123800ebe3e42e2712fef"
+require ${THISDIR}/../mldebugger/mldebugger-git.inc
+
+SRC_URI = "${MLDEBUGGER_GIT_URI}"
+SRCREV = "d433522409805bfd139896a83110e7f736fcc866"
+
 S = "${WORKDIR}/git"
 LIC_FILES_CHKSUM = "file://${S}/LICENSE;md5=339c1da88443bff3a1b84d59a9bdefa6"
 

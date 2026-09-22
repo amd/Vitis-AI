@@ -28,9 +28,11 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <vart/vart_device.hpp>
+#include <vart/vart_inferresult_types.hpp>
 #include <vart/vart_videoframe.hpp>
 #include <vector>
 
@@ -154,6 +156,7 @@ struct PreprocessedFrame {
   BatchedFrames preprocessed_frame;  //[batch_idx][frame_idx]
   int frame_index;                   // Sequential frame number
   int64_t iteration_number;          // Iteration number this frame belongs to
+  std::vector<vart::InferResScaleInfo> scale_info;  // per batch_idx
 
   PreprocessedFrame() : frame_index(0), iteration_number(0) {}
 
@@ -161,6 +164,7 @@ struct PreprocessedFrame {
   PreprocessedFrame(size_t batch_size, size_t num_frames_per_batch = 1, int idx = 0)
       : frame_index(idx), iteration_number(0) {
     preprocessed_frame.resize(batch_size);
+    scale_info.resize(batch_size);
     for (size_t i = 0; i < batch_size; i++) {
       preprocessed_frame[i].resize(num_frames_per_batch);
     }
@@ -193,11 +197,13 @@ struct InferenceResult {
   BatchedTensors inference_output;  // Inference results (vector of output tensors)
   int frame_index;                  // Sequential frame number
   int64_t iteration_number;         // Iteration number this frame belongs to
+  std::vector<vart::InferResScaleInfo> scale_info;  // per batch_idx
 
   InferenceResult() : frame_index(0), iteration_number(0) {}
 
   InferenceResult(TensorList output, int idx) : frame_index(idx), iteration_number(0) {
     inference_output.push_back(std::move(output));
+    scale_info.resize(1);
   }
 };
 

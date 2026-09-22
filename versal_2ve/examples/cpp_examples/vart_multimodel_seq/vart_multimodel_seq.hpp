@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <any>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -53,6 +54,8 @@
 
 #include <vart/vart_npu_tensor.hpp>
 #include <vart/vart_runner_factory.hpp>
+
+#include "common/app_utils.hpp"
 
 namespace po = boost::program_options;
 using boost::property_tree::ptree;
@@ -124,13 +127,19 @@ class utils {
    * own defaults.
    */
   struct ModelConfig {
-    std::string model_cache_path;  // "model_cache_path"
-    uint32_t start_column = 0;     // "start_column" – starting NPU column
+    std::string model_cache_path;  // "model-cache-path"
+    uint32_t start_column = 0;     // "start-column" – starting NPU column
     bool is_start_column_provided = false;
-    bool aie_columns_sharing = true;  // "aie_columns_sharing" – true=shared/temporal, false=exclusive/spatial
+    bool aie_columns_sharing = true;  // "aie-columns-sharing" – true=shared/temporal, false=exclusive/spatial
     bool is_columns_sharing_provided = false;
+    // "input-tensor-type" / "output-tensor-type" – "CPU" or "HW". Selects the
+    // tensor view used to create the runner. A model that has a CPU subgraph at
+    // its input (or output) boundary must use "CPU" for that direction; "HW"
+    // would cause runner creation to fail. Defaults to "HW".
+    std::string input_tensor_type = "HW";
+    std::string output_tensor_type = "HW";
     std::unordered_map<std::string, std::string> ifm_node_file_map;  // tensor name → full IFM file path
-    std::string ofm_dir;                                             // "ofm_dir"  – directory to save OFM files
+    std::string ofm_dir;                                             // "ofm-dir"  – directory to save OFM files
   };
 
   /**
@@ -180,10 +189,12 @@ class utils {
 
   /**
    * @brief Parse a single model ptree node into a ModelConfig.
-   * @details Extracts model_cache_path, start_column, aie_columns_sharing,
-   *          ofm_dir, and ifm_node_file_map from the given JSON node. Throws
-   *          std::runtime_error if the required field model_cache_path is
-   *          missing.
+   * @details Extracts model-cache-path, start-column, aie-columns-sharing,
+   *          ofm-dir, and ifm-node-file-map from the given JSON node. This
+   *          hyphenated key schema is recommended; the underscored schema
+   *          (e.g. model_cache_path) is maintained for backward compatibility.
+   *          Throws std::runtime_error if the required field model-cache-path
+   *          is missing.
    * @param node   Boost.PropertyTree node representing one model entry.
    * @param index  Zero-based index of this model in the config array.
    * @return Populated ModelConfig struct.
@@ -191,35 +202,94 @@ class utils {
   static ModelConfig parse_model_entry(const ptree& node, size_t index) {
     ModelConfig cfg;
 
-    cfg.model_cache_path = node.get<std::string>("model_cache_path", "");
+    auto model_cache_path_node = node.get_optional<std::string>("model-cache-path");
+    if (!model_cache_path_node) {
+      model_cache_path_node = node.get_optional<std::string>("model_cache_path");
+    }
+    cfg.model_cache_path = model_cache_path_node ? *model_cache_path_node : "";
     if (cfg.model_cache_path.empty()) {
-      throw std::runtime_error("Model entry " + std::to_string(index) + " missing required field: model_cache_path");
+      throw std::runtime_error("Model entry " + std::to_string(index) + " missing required field: model-cache-path");
     }
 
     // start_column / aie_columns_sharing are forwarded to the VART runner
     // via the options bag in initialize() – see VartMultimodelSeq::initialize().
-    auto start_col_node = node.get_optional<uint32_t>("start_column");
+    const char* start_column_key = "start-column";
+    auto start_col_node = node.get_optional<uint32_t>(start_column_key);
+    if (!start_col_node) {
+      start_column_key = "start_column";
+      start_col_node = node.get_optional<uint32_t>(start_column_key);
+    }
     if (start_col_node) {
       cfg.start_column = *start_col_node;
       cfg.is_start_column_provided = true;
 
       if (cfg.start_column > 32) {
-        std::cerr << "[ERROR] Model entry " << index << ": invalid start_column=" << cfg.start_column
-                  << ". Must be in the range 0-32.\n";
-        std::exit(1);
+        throw std::runtime_error("Model entry " + std::to_string(index) + ": invalid " + start_column_key + "=" +
+                                 std::to_string(cfg.start_column) + ". Must be in the range 0-32.");
       }
     }
 
-    auto sharing_node = node.get_optional<std::string>("aie_columns_sharing");
+    const char* sharing_key = "aie-columns-sharing";
+    auto sharing_node = node.get_optional<std::string>(sharing_key);
+    if (!sharing_node) {
+      sharing_key = "aie_columns_sharing";
+      sharing_node = node.get_optional<std::string>(sharing_key);
+    }
     if (sharing_node) {
-      const std::string& val = *sharing_node;
-      cfg.aie_columns_sharing = (val == "true" || val == "1");
+      std::string val = *sharing_node;
+      std::transform(val.begin(), val.end(), val.begin(), [](unsigned char c) { return std::tolower(c); });
+      if (val == "true" || val == "1") {
+        cfg.aie_columns_sharing = true;
+      } else if (val == "false" || val == "0") {
+        cfg.aie_columns_sharing = false;
+      } else {
+        throw std::runtime_error("Model entry " + std::to_string(index) + ": invalid " + sharing_key + "=\"" +
+                                 *sharing_node + "\". Must be \"true\"/\"1\" or \"false\"/\"0\".");
+      }
       cfg.is_columns_sharing_provided = true;
     }
-    cfg.ofm_dir = node.get<std::string>("ofm_dir", ".");
 
-    // Parse ifm_node_file_map object (optional). Values must be full file paths.
-    auto ifm_map_node = node.get_child_optional("ifm_node_file_map");
+    // input_tensor_type / output_tensor_type select the CPU vs HW tensor view
+    // used when the runner is created. Required to be "CPU" for a direction
+    // whose boundary is a CPU subgraph (otherwise runner creation fails).
+    auto normalize_tensor_type = [index](const std::string& raw, const char* field) -> std::string {
+      std::string v = raw;
+      std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::toupper(c); });
+      if (v != "CPU" && v != "HW") {
+        throw std::runtime_error("Model entry " + std::to_string(index) + ": invalid " + field + "=\"" + raw +
+                                 "\". Must be \"CPU\" or \"HW\".");
+      }
+      return v;
+    };
+    const char* input_tensor_type_key = "input-tensor-type";
+    auto input_tensor_type_node = node.get_optional<std::string>(input_tensor_type_key);
+    if (!input_tensor_type_node) {
+      input_tensor_type_key = "input_tensor_type";
+      input_tensor_type_node = node.get_optional<std::string>(input_tensor_type_key);
+    }
+    cfg.input_tensor_type =
+        normalize_tensor_type(input_tensor_type_node ? *input_tensor_type_node : "HW", input_tensor_type_key);
+
+    const char* output_tensor_type_key = "output-tensor-type";
+    auto output_tensor_type_node = node.get_optional<std::string>(output_tensor_type_key);
+    if (!output_tensor_type_node) {
+      output_tensor_type_key = "output_tensor_type";
+      output_tensor_type_node = node.get_optional<std::string>(output_tensor_type_key);
+    }
+    cfg.output_tensor_type =
+        normalize_tensor_type(output_tensor_type_node ? *output_tensor_type_node : "HW", output_tensor_type_key);
+
+    auto ofm_dir_node = node.get_optional<std::string>("ofm-dir");
+    if (!ofm_dir_node) {
+      ofm_dir_node = node.get_optional<std::string>("ofm_dir");
+    }
+    cfg.ofm_dir = ofm_dir_node ? *ofm_dir_node : ".";
+
+    // Parse ifm-node-file-map object (optional). Values must be full file paths.
+    auto ifm_map_node = node.get_child_optional("ifm-node-file-map");
+    if (!ifm_map_node) {
+      ifm_map_node = node.get_child_optional("ifm_node_file_map");
+    }
     if (ifm_map_node) {
       for (const auto& item : *ifm_map_node) {
         const std::string key = item.first;
@@ -237,7 +307,7 @@ class utils {
    * @brief Read and parse the JSON config file.
    * @details The file must contain a JSON array of model objects. After
    *          parsing, validates that no two models have overlapping NPU
-   *          columns when either model sets aie_columns_sharing to false
+   *          columns when either model sets aie-columns-sharing to false
    *          (exclusive). On conflict the application prints a diagnostic
    *          and exits. Finally prints a summary of overlay column
    *          assignments.
@@ -285,14 +355,13 @@ class utils {
 
           // Conflict: same start column but at least one is exclusive
           if (!sharing_i || !sharing_k) {
-            std::cerr << "[ERROR] Column sharing conflict between models:\n"
-                      << "  Model_" << (i + 1) << " uses start_column " << sc_i
-                      << " with aie_columns_sharing=" << (sharing_i ? "true (shared)" : "false (exclusive)") << "\n"
-                      << "  Model_" << (k + 1) << " uses start_column " << sc_k
-                      << " with aie_columns_sharing=" << (sharing_k ? "true (shared)" : "false (exclusive)") << "\n"
-                      << "Same start_column cannot be used when any model "
-                         "sets aie_columns_sharing to false (exclusive).\n";
-            std::exit(1);
+            throw std::runtime_error(
+                "Column sharing conflict between models:\n  Model_" + std::to_string(i + 1) + " uses start-column " +
+                std::to_string(sc_i) +
+                " with aie-columns-sharing=" + (sharing_i ? "true (shared)" : "false (exclusive)") + "\n  Model_" +
+                std::to_string(k + 1) + " uses start-column " + std::to_string(sc_k) +
+                " with aie-columns-sharing=" + (sharing_k ? "true (shared)" : "false (exclusive)") +
+                "\nSame start-column cannot be used when any model sets aie-columns-sharing to false (exclusive).");
           }
         }
       }
@@ -308,7 +377,7 @@ class utils {
 
       std::cout << "========== Overlay Column Assignments ==========\n";
       for (const auto& [start_col, models] : overlay_map) {
-        std::cout << "  start_column " << start_col << " : ";
+        std::cout << "  start-column " << start_col << " : ";
         for (size_t i = 0; i < models.size(); ++i) {
           if (i > 0)
             std::cout << ", ";
@@ -444,7 +513,7 @@ class utils {
    *          "(skipped – dry-run)" since save_ofms() is not called in
    *          dry-run mode. Defined out-of-line after VartMultimodelSeq is
    *          fully declared.
-   * @param opt           Parsed options (for start_column / sharing / ofm_dir)
+   * @param opt           Parsed options (for start-column / sharing / ofm-dir)
    * @param models        Initialised model instances (for OFM tensor metadata)
    * @param random_io     True when --dry-run / -d dry-run mode is active
    */
@@ -454,13 +523,17 @@ class utils {
 
   /**
    * @brief Print the post-execution performance table
-   * @details Prints one row per model with columns:
-   *            | Model | Iterations | Avg (ms) |
+   * @details Prints an iteration-count context line, then one row per model with columns:
+   *            | Model | Average Inference Time | Average Throughput |
+   *          The reported time/throughput are per-iteration averages, one iteration being
+   *          one inference call that runs the model in parallel across its dp_size HW instances.
    * @param opt           Parsed options containing all model configs
-   * @param iterations    Number of iterations executed for each model
+   * @param iterations    Number of iterations executed for each model (printed as context)
    * @param avg_ms        Per-model average inference latency in milliseconds
+   * @param batch_sizes   Per-model Data Parallelism size (dp_size; used to derive throughput)
    */
-  static void print_performance_summary(const Options& opt, uint32_t iterations, const std::vector<double>& avg_ms);
+  static void print_performance_summary(const Options& opt, uint32_t iterations, const std::vector<double>& avg_ms,
+                                        const std::vector<size_t>& batch_sizes);
 
  private:
   utils() = delete;
@@ -567,6 +640,21 @@ class VartMultimodelSeq {
    * @brief Return the number of output tensors reported by the runner.
    */
   size_t get_num_output_tensors() const;
+
+  /**
+   * @brief Return the input-side Data Parallelism size (dp_size) reported by the runner -
+   * the number of HW instances this model is replicated across and executed on in parallel.
+   * @details Used for performance/throughput reporting (see utils::print_performance_summary),
+   *          always derived from the input-side batch size.
+   */
+  size_t get_batch_size() const { return m_input_batch_size; }
+
+  /**
+   * @brief Return the output-side batch size reported by the runner.
+   * @details Governs OFM tensor allocation/writing only; not used for performance/throughput
+   *          reporting.
+   */
+  size_t get_output_batch_size() const { return m_output_batch_size; }
 
   /**
    * @brief Return tensor metadata (name, shape, size) for input tensors.
@@ -683,9 +771,12 @@ class VartMultimodelSeq {
   // Runner-allocated tensors: [batch][tensor_idx]
   std::vector<std::vector<vart::NpuTensor>> m_ifm_tensors;
   std::vector<std::vector<vart::NpuTensor>> m_ofm_tensors;
-  size_t m_batch_size = 1;         // populated by allocate_tensors() from runner->get_batch_size()
-  size_t m_actual_batch_size = 0;  // actual number of frames loaded by load_ifms() or fill_random_ifms();
-                                   // may be less than m_batch_size for partial batches
+  // Populated by allocate_tensors() from runner->get_batch_size(TensorDirection::INPUT/OUTPUT).
+  size_t m_input_batch_size = 1;
+  size_t m_output_batch_size = 1;
+  size_t m_actual_batch_size = 0;  // actual number of INPUT frames loaded by load_ifms() or fill_random_ifms();
+                                   // may be less than m_input_batch_size for partial batches. Only sizes
+                                   // m_ifm_tensors; m_ofm_tensors always keeps its full m_output_batch_size.
   bool m_tensors_allocated = false;
 };
 
@@ -819,8 +910,8 @@ inline void utils::print_execution_summary(const Options& opt,
           joined += ", ";
         // Build the same filename that save_ofms() produces:
         // <ofm_dir>/ofm_model_<N>/<name>_<shape>_<datatype>.bin
-        std::string fname =
-            oi[j].name + "_" + shape_to_string(oi[j].shape) + "_" + data_type_to_string(oi[j].data_type) + ".bin";
+        std::string fname = sanitize_tensor_name(oi[j].name) + "_" + shape_to_string(oi[j].shape) + "_" +
+                            data_type_to_string(oi[j].data_type) + ".bin";
         std::filesystem::path p = std::filesystem::path(cfg.ofm_dir) / ("ofm_model_" + std::to_string(i + 1)) / fname;
         joined += p.string();
       }
@@ -852,58 +943,27 @@ inline void utils::print_execution_summary(const Options& opt,
 
 /**
  * @brief Print the post-execution performance table
- * @details For each model prints the number of inference iterations executed
- *          and the average per-iteration latency in milliseconds.
+ * @details Prints a context line with the iteration count, then one row per model
+ *          showing the per-iteration average inference time (one inference call runs
+ *          the model in parallel across its dp_size HW instances) and throughput.
  * @param opt         Parsed options containing all model configs
- * @param iterations  Number of inference iterations per model
+ * @param iterations  Number of inference iterations per model (printed as context)
  * @param avg_ms      Per-model average inference latency in milliseconds
+ * @param batch_sizes Per-model Data Parallelism size (dp_size; used to derive throughput)
  */
 inline void utils::print_performance_summary(const Options& opt,
                                              uint32_t iterations,
-                                             const std::vector<double>& avg_ms) {
-  struct Row {
-    std::string model_label;
-    std::string iters;
-    std::string avg_ms_str;
-  };
-  std::vector<Row> rows;
-
-  // Prefix convention for table formatting:
-  // h_ = header text, w_ = computed column width, v_/row fields = row values.
-  const std::string h_model = "Model";
-  const std::string h_iters = "Iterations";
-  const std::string h_avg = "Avg (ms)";
-
-  size_t w_model = h_model.size();
-  size_t w_iters = h_iters.size();
-  size_t w_avg = h_avg.size();
-
+                                             const std::vector<double>& avg_ms,
+                                             const std::vector<size_t>& batch_sizes) {
+  std::vector<PerfEntry> entries;
   for (size_t i = 0; i < opt.models.size(); ++i) {
-    Row r;
-    r.model_label = "Model_" + std::to_string(i + 1);
-    r.iters = std::to_string(iterations);
-
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(3) << (i < avg_ms.size() ? avg_ms[i] : 0.0);
-    r.avg_ms_str = oss.str();
-
-    w_model = std::max(w_model, r.model_label.size());
-    w_iters = std::max(w_iters, r.iters.size());
-    w_avg = std::max(w_avg, r.avg_ms_str.size());
-
-    rows.push_back(std::move(r));
+    const double ms_per_batch = (i < avg_ms.size()) ? avg_ms[i] : 0.0;
+    const size_t batch_size = (i < batch_sizes.size()) ? batch_sizes[i] : 1;
+    const double fps = (ms_per_batch > 0.0) ? (static_cast<double>(batch_size) * 1000.0 / ms_per_batch) : 0.0;
+    entries.push_back({"Model_" + std::to_string(i + 1), fmt_ms_per_inference(ms_per_batch, batch_size), fmt_fps(fps)});
   }
 
-  std::cout << "\n========== Performance ==========\n";
-  const std::string sep =
-      std::string(w_model, '-') + "-+-" + std::string(w_iters, '-') + "-+-" + std::string(w_avg, '-');
-  std::cout << sep << "\n";
-  std::cout << std::left << std::setw(w_model) << h_model << " | " << std::setw(w_iters) << h_iters << " | " << h_avg
-            << "\n";
-  std::cout << sep << "\n";
-  for (const auto& r : rows) {
-    std::cout << std::left << std::setw(w_model) << r.model_label << " | " << std::setw(w_iters) << r.iters << " | "
-              << r.avg_ms_str << "\n";
-  }
-  std::cout << sep << "\n";
+  std::cout << "\n";
+  std::cout << "Benchmark: " << iterations << " iteration(s) per model (values are per-iteration averages).\n";
+  print_perf_table("Model", entries);
 }

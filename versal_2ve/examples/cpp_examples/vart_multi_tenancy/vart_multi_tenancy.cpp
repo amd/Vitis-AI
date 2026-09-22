@@ -234,32 +234,38 @@ vart::TensorType VartMultiTenancy::get_ofm_alloc_tensor_type() const {
 
 /**
  * @brief Allocate IFM and OFM NpuTensor buffers via the runner
- * @details Uses the runner's allocate_npu_tensor() API. The batch size is
- *          obtained from runner->get_batch_size() so a single IFM file may
- *          carry multiple frames concatenated end-to-end.
+ * @details Uses the runner's allocate_npu_tensor() API. Input and output batch
+ *          sizes are obtained independently from
+ *          runner->get_batch_size(TensorDirection::INPUT) and
+ *          runner->get_batch_size(TensorDirection::OUTPUT), so a single IFM
+ *          file may carry multiple frames concatenated end-to-end.
  *          Populates m_ifm_tensors and m_ofm_tensors for subsequent
  *          load/infer/save calls.
  * @return true on success, false if any tensor allocation fails
  */
 bool VartMultiTenancy::allocate_tensors() {
   try {
-    m_batch_size = m_runner->get_batch_size();
-    if (m_batch_size == 0) {
-      log_error("[ERROR] ", m_model_name, ": runner reported batch_size=0.");
+    m_input_batch_size = m_runner->get_batch_size(vart::TensorDirection::INPUT);
+    m_output_batch_size = m_runner->get_batch_size(vart::TensorDirection::OUTPUT);
+    if (m_input_batch_size == 0 || m_output_batch_size == 0) {
+      log_error("[ERROR] ", m_model_name, ": runner reported input_batch_size=", m_input_batch_size,
+                ", output_batch_size=", m_output_batch_size, ".");
       return false;
     }
-    m_ifm_tensors.resize(m_batch_size);
-    m_ofm_tensors.resize(m_batch_size);
+    m_ifm_tensors.resize(m_input_batch_size);
+    m_ofm_tensors.resize(m_output_batch_size);
 
     const auto& in_info = get_input_tensors_info(m_input_tensor_type);
     const auto& out_info = get_output_tensors_info(m_output_tensor_type);
 
-    for (size_t batch = 0; batch < m_batch_size; ++batch) {
+    for (size_t batch = 0; batch < m_input_batch_size; ++batch) {
       for (size_t i = 0; i < m_num_input_tensors; ++i) {
         auto tensor = m_runner->allocate_npu_tensor(in_info[i]);
         m_ifm_tensors[batch].push_back(std::move(tensor));
       }
+    }
 
+    for (size_t batch = 0; batch < m_output_batch_size; ++batch) {
       for (size_t i = 0; i < m_num_output_tensors; ++i) {
         auto tensor = m_runner->allocate_npu_tensor(out_info[i]);
         m_ofm_tensors[batch].push_back(std::move(tensor));
@@ -267,8 +273,9 @@ bool VartMultiTenancy::allocate_tensors() {
     }
 
     m_tensors_allocated = true;
-    log_info("[INFO] ", m_model_name, ": [Step 1/4 Allocate] batch_size=", m_batch_size, ", allocated ",
-             m_num_input_tensors, " IFM and ", m_num_output_tensors, " OFM tensor(s) per batch.");
+    log_info("[INFO] ", m_model_name, ": [Step 1/4 Allocate] input_batch_size=", m_input_batch_size,
+             ", output_batch_size=", m_output_batch_size, ", allocated ", m_num_input_tensors, " IFM and ",
+             m_num_output_tensors, " OFM tensor(s) per batch.");
     return true;
   } catch (const std::exception& ex) {
     log_error("[ERROR] ", m_model_name, ": tensor allocation failed: ", ex.what());
@@ -365,22 +372,22 @@ bool VartMultiTenancy::load_ifms(const utils::ModelConfig& cfg) {
       }
 
       const size_t frames_in_file = file_size / per_frame;
-      const size_t frames_to_read = std::min(frames_in_file, m_batch_size);
+      const size_t frames_to_read = std::min(frames_in_file, m_input_batch_size);
 
-      if (frames_in_file < m_batch_size) {
+      if (frames_in_file < m_input_batch_size) {
         log_warn("[WARN] ", m_model_name, ": IFM file '", file_path.string(), "' for tensor '", tensor_name,
-                 "' contains ", frames_in_file, " frame(s) but model batch_size is ", m_batch_size,
+                 "' contains ", frames_in_file, " frame(s) but model input_batch_size is ", m_input_batch_size,
                  ". Proceeding with partial batch \u2013 VART ML will handle the partial-frame execution.");
-      } else if (frames_in_file > m_batch_size) {
+      } else if (frames_in_file > m_input_batch_size) {
         log_warn("[WARN] ", m_model_name, ": IFM file '", file_path.string(), "' for tensor '", tensor_name,
-                 "' contains ", frames_in_file, " frame(s); only the first ", m_batch_size,
-                 " (batch_size) will be loaded.");
+                 "' contains ", frames_in_file, " frame(s); only the first ", m_input_batch_size,
+                 " (input_batch_size) will be loaded.");
       }
 
       ifs.seekg(0, std::ios::beg);
 
       // Read one frame per batch slot from consecutive regions of the file.
-      // When frames_in_file < m_batch_size (partial batch), only the first
+      // When frames_in_file < m_input_batch_size (partial batch), only the first
       // frames_to_read batch slots are populated. The application tracks
       // this via m_actual_batch_size so that infer_execute() and save_ofms()
       // only process the valid frames — no dummy/stale data is forwarded
@@ -400,18 +407,21 @@ bool VartMultiTenancy::load_ifms(const utils::ModelConfig& cfg) {
       }
 
       log_info("[INFO] ", m_model_name, ": [Step 2/4 Load IFMs] loaded '", tensor_name, "' from ", file_path.string(),
-               " (", frames_to_read, "/", m_batch_size, " frame(s) x ", per_frame, " bytes)");
+               " (", frames_to_read, "/", m_input_batch_size, " frame(s) x ", per_frame, " bytes)");
     }
 
-    // For partial batches, shrink the tensor vectors to the actual number
-    // of loaded frames. This frees the unused trailing NPU tensor slots
-    // and lets infer_execute() / save_ofms() pass the vectors directly
-    // without needing temporary partial views.
-    if (m_actual_batch_size < m_batch_size) {
+    // For partial batches, shrink the IFM tensor vector to the actual number
+    // of loaded frames. This frees the unused trailing NPU tensor slots and
+    // lets infer_execute() pass m_ifm_tensors directly without needing a
+    // temporary partial view.
+    //
+    // m_ofm_tensors is independent of the input side and always stays at its
+    // full output_batch_size - execute()/save_ofms() always see/save the
+    // model's complete output batch regardless of input batch fullness.
+    if (m_actual_batch_size < m_input_batch_size) {
       m_ifm_tensors.resize(m_actual_batch_size);
-      m_ofm_tensors.resize(m_actual_batch_size);
-      log_warn("[WARN] ", m_model_name, ": executing partial batch (", m_actual_batch_size, "/", m_batch_size,
-               " frames).");
+      log_warn("[WARN] ", m_model_name, ": executing partial batch (", m_actual_batch_size, "/", m_input_batch_size,
+               " input frames).");
     }
 
     return true;
@@ -444,7 +454,7 @@ bool VartMultiTenancy::fill_random_ifms() {
 
   const auto& info = get_input_tensors_info(m_input_tensor_type);
 
-  for (size_t b = 0; b < m_batch_size; ++b) {
+  for (size_t b = 0; b < m_input_batch_size; ++b) {
     for (size_t j = 0; j < m_num_input_tensors; ++j) {
       uint8_t* data = static_cast<uint8_t*>(m_ifm_tensors[b][j].get_virtual_address());
       const size_t nbytes = info[j].size_in_bytes;
@@ -455,11 +465,11 @@ bool VartMultiTenancy::fill_random_ifms() {
   }
 
   // In dry-run mode all batch slots are populated with random data,
-  // so the actual batch size equals the full model batch size.
-  m_actual_batch_size = m_batch_size;
+  // so the actual batch size equals the full model input batch size.
+  m_actual_batch_size = m_input_batch_size;
 
   log_info("[INFO] ", m_model_name, ": [Step 2/4 Load IFMs] dry-run: filled ", m_num_input_tensors, " IFM tensor(s) x ",
-           m_batch_size, " batch(es) with random bytes (no files read).");
+           m_input_batch_size, " batch(es) with random bytes (no files read).");
   return true;
 }
 
@@ -496,8 +506,8 @@ bool VartMultiTenancy::save_ofms(const utils::ModelConfig& cfg, size_t model_ind
     const auto& info = get_output_tensors_info(m_output_tensor_type);
 
     for (size_t j = 0; j < m_num_output_tensors; ++j) {
-      std::string filename =
-          info[j].name + "_" + shape_to_string(info[j].shape) + "_" + data_type_to_string(info[j].data_type) + ".bin";
+      std::string filename = sanitize_tensor_name(info[j].name) + "_" + shape_to_string(info[j].shape) + "_" +
+                             data_type_to_string(info[j].data_type) + ".bin";
       auto ofm_path = model_ofm_dir / filename;
       std::ofstream ofs(ofm_path, std::ios::binary);
       if (!ofs.is_open()) {
@@ -505,11 +515,10 @@ bool VartMultiTenancy::save_ofms(const utils::ModelConfig& cfg, size_t model_ind
         return false;
       }
 
-      // Write only the frames that were actually processed during
-      // inference (m_actual_batch_size). When the user provides fewer
-      // frames than the model's batch size, only those valid output
-      // frames are saved — no stale/uninitialised data is written.
-      const size_t frames_to_save = (m_actual_batch_size > 0) ? m_actual_batch_size : m_batch_size;
+      // Write exactly as many frames as m_ofm_tensors holds - always the model's full
+      // declared output_batch_size (see load_ifms()), independent of the input side
+      // and any partial input batch.
+      const size_t frames_to_save = m_ofm_tensors.size();
       size_t total_bytes = 0;
       for (size_t b = 0; b < frames_to_save; ++b) {
         const void* data = m_ofm_tensors[b][j].get_virtual_address();
@@ -518,7 +527,7 @@ bool VartMultiTenancy::save_ofms(const utils::ModelConfig& cfg, size_t model_ind
       }
 
       log_info("[INFO] ", m_model_name, ": [Step 4/4 Save OFMs] saved '", info[j].name, "' (", frames_to_save, "/",
-               m_batch_size, " batch frame(s)) -> ", ofm_path.string(), " (", total_bytes, " bytes)");
+               m_output_batch_size, " batch frame(s)) -> ", ofm_path.string(), " (", total_bytes, " bytes)");
     }
     return true;
   } catch (const std::exception& ex) {

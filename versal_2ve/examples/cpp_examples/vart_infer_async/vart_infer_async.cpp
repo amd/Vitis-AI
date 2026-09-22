@@ -27,10 +27,12 @@
 
 namespace {
 
-constexpr const char* kInputTensorType = "HW";
-constexpr const char* kOutputTensorType = "HW";
 constexpr const char* kRunnerLogLevel = "INFO";
 constexpr int kResourceRetryDelayMs = 10;
+
+static const char* tensor_type_to_string(vart::TensorType type) {
+  return (type == vart::TensorType::CPU) ? "CPU" : "HW";
+}
 
 static const std::unordered_map<vart::StatusCode, std::string> kStatusStr = {
     {vart::StatusCode::SUCCESS, "SUCCESS"},
@@ -48,7 +50,10 @@ static const std::unordered_map<vart::StatusCode, std::string> kStatusStr = {
 
 namespace fs = std::filesystem;
 
-VartInferAsync::VartInferAsync(const std::string& model_path) : model_path_(model_path) {
+VartInferAsync::VartInferAsync(const std::string& model_path,
+                               vart::TensorType input_tensor_type,
+                               vart::TensorType output_tensor_type)
+    : model_path_(model_path), input_tensor_type_(input_tensor_type), output_tensor_type_(output_tensor_type) {
   if (!fs::exists(model_path_)) {
     throw std::runtime_error("compiled model path does not exist: " + model_path_);
   }
@@ -70,8 +75,8 @@ vart::NpuTensor VartInferAsync::allocate_npu_tensor(const vart::NpuTensorInfo& i
 void VartInferAsync::create_runner() {
   std::unordered_map<std::string, std::any> options = {
       {"log_level", std::string(kRunnerLogLevel)},
-      {"input_tensor_type", std::string(kInputTensorType)},
-      {"output_tensor_type", std::string(kOutputTensorType)},
+      {"input_tensor_type", std::string(tensor_type_to_string(input_tensor_type_))},
+      {"output_tensor_type", std::string(tensor_type_to_string(output_tensor_type_))},
   };
   try {
     runner_ = vart::RunnerFactory::create_runner(vart::RunnerType::VAIML, model_path_, options);
@@ -84,9 +89,10 @@ void VartInferAsync::create_runner() {
   try {
     num_input_tensors_ = runner_->get_num_input_tensors();
     num_output_tensors_ = runner_->get_num_output_tensors();
-    batch_size_ = runner_->get_batch_size();
-    input_tensors_info_ = runner_->get_tensors_info(vart::TensorDirection::INPUT, vart::TensorType::HW);
-    output_tensors_info_ = runner_->get_tensors_info(vart::TensorDirection::OUTPUT, vart::TensorType::HW);
+    input_batch_size_ = runner_->get_batch_size(vart::TensorDirection::INPUT);
+    output_batch_size_ = runner_->get_batch_size(vart::TensorDirection::OUTPUT);
+    input_tensors_info_ = runner_->get_tensors_info(vart::TensorDirection::INPUT, input_tensor_type_);
+    output_tensors_info_ = runner_->get_tensors_info(vart::TensorDirection::OUTPUT, output_tensor_type_);
   } catch (const std::exception& e) {
     throw std::runtime_error(std::string("Runner metadata query failed: ") + e.what());
   }

@@ -47,24 +47,25 @@
  * @brief Fixed-size pool of vart::Memory objects backed by XRT buffer objects.
  *
  * @par Lifetime contract
- * The pool MUST outlive every shared_ptr<vart::Memory> it issues from
- * acquire_buffer(). The shared_ptr returned by acquire_buffer() carries
- * a custom deleter that calls back into the pool to recycle the buffer;
- * if the pool is destroyed while a shared_ptr is still alive, the
- * deleter will later run on a destroyed object (undefined behavior).
+ * Each shared_ptr from acquire_buffer() carries a custom deleter that captures
+ * shared pool State. The State outlives the pool object, so deleters never
+ * touch a destroyed pool instance.
  *
- * Required teardown order:
- *   1. Stop all producers/consumers so no further acquire_buffer() calls
- *      are made and no acquired shared_ptrs are still in flight.
- *   2. Release every shared_ptr returned by acquire_buffer() (drop them,
- *      reset() them, or let them go out of scope).
- *   3. Then destroy the pool.
+ * Required teardown order (callers that own the pool):
+ *   1. Stop pipeline consumers before producers (inference, postprocess,
+ *      preprocess, then file readers) so no further acquire_buffer() calls
+ *      are made and in-flight buffers can be released.
+ *   2. Release every outstanding shared_ptr (let worker threads exit, drop
+ *      queued holders, reset() any remaining shared_ptrs).
+ *   3. Destroy the pool object (typically when the owning component instance
+ *      is cleared).
  *
- * The destructor performs a bounded 5s drain wait to detect contract
- * violations and logs an error if outstanding buffers remain after the
- * timeout. The wait is a diagnostic, not a license to violate the
- * contract: any shared_ptr still alive after the destructor returns
- * will trigger undefined behavior when its refcount reaches zero.
+ * Destructor behaviour:
+ *   - Sets stopping_, wakes blocked acquirers, and waits up to 5s for
+ *     outstanding buffers to return.
+ *   - On timeout, logs the outstanding count, sets alive=false, and returns.
+ *   - Any shared_ptr still alive after that is destroyed by its deleter
+ *     without recycling (safe: no leak, no use-after-free).
  */
 class MemoryBufferPool {
  public:
@@ -89,16 +90,10 @@ class MemoryBufferPool {
   /**
    * @brief Destructor.
    *
-   * Signals shutdown (so blocked acquire_buffer() callers throw cleanly)
-   * and then waits up to 5 seconds for every outstanding buffer to be
-   * returned to the pool. If the drain times out, an error is logged
-   * with the leaked count and the destructor proceeds.
-   *
-   * @warning Proceeding past the drain timeout violates the lifetime
-   *          contract documented on the class. Callers must ensure all
-   *          issued shared_ptrs have been released before the destructor
-   *          runs; the timeout exists only to surface the bug, not to
-   *          make the failure safe.
+   * Signals shutdown (blocked acquire_buffer() callers throw), waits up to
+   * 5 seconds for outstanding buffers to return, then sets alive=false.
+   * If the drain times out, an error is logged; remaining shared_ptr
+   * deleters destroy their buffers without recycling.
    */
   ~MemoryBufferPool();
 
@@ -111,19 +106,7 @@ class MemoryBufferPool {
   std::shared_ptr<buffer_type> acquire() { return acquire_buffer(); }
 
  private:
-  /**
-   * @brief Return a buffer to the pool. Invoked exclusively by the custom
-   *        deleter installed on the shared_ptr handed out by acquire_buffer().
-   *        Not part of the public API – calling this directly while still
-   *        holding the shared_ptr would corrupt the free queue and the
-   *        outstanding_ counter.
-   */
-  void release_buffer(std::shared_ptr<vart::Memory> buffer);
+  struct State;
 
-  std::queue<std::shared_ptr<vart::Memory>> free_buffers_;  ///< Available buffers
-  std::mutex mutex_;                                        ///< Protects free_buffers_
-  std::condition_variable condition_;                       ///< Signaled on release and on shutdown
-  std::chrono::milliseconds timeout_duration_;              ///< Acquire timeout
-  bool stopping_{false};                                    ///< Set during shutdown
-  size_t outstanding_{0};                                   ///< Buffers currently checked out
+  std::shared_ptr<State> state_;
 };

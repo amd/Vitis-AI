@@ -62,7 +62,6 @@
 /* To dump application input frames and inference input frames in bgr */
 #define DUMP_INPUTS
 
-/* TODO membank should come for infer */
 #define DEFAULT_FRAME_MEMBANK 2
 #define DEFAULT_DEVICE_INDEX 1
 /* HLS HW accelerated image pre-processing IP */
@@ -236,9 +235,8 @@ typedef struct {
   uint32_t input_height;
   uint32_t input_width;
 
-  /* Flag to do PanScan cropping while maintaining aspect-ratio for this
-   * pipeline */
-  bool do_pan_scan;
+  /* Preprocess geometry for inverse transform (populated per frame in pre_process) */
+  vart::InferResScaleInfo scale_info;
 
   /* Debug-specific file paths and stream (enabled with DUMP_INPUTS flag) */
 #ifdef DUMP_INPUTS

@@ -36,14 +36,21 @@ class VartInferAsync {
   static constexpr std::uint32_t kNumConcurrentJobs =
       2;  ///< Parallel async job slots / tensor pools (see @c allocate_tensor_pools in @c main.cpp).
   static constexpr std::size_t kDefaultDryRunFrameCount =
-      1;  ///< Dry-run IFM depth factor: multiplied by @c batch_size() sample rows in @c load_input_random.
+      1;  ///< Dry-run IFM depth factor: multiplied by @c input_batch_size() sample rows in @c load_input_random.
 
   /**
    * @param model_path Path to the compiled model. Accepts either a `.rai` artifact file or
    *                   a VAIML compiled-model cache directory; the path is forwarded as-is to
    *                   `vart::RunnerFactory::create_runner`. Existence is checked, type is not.
+   * @param input_tensor_type  Tensor type used for the model's input boundary: `vart::TensorType::HW`
+   *                   (hardware-native layout, default) or `vart::TensorType::CPU` (standard ONNX layout).
+   *                   Must be `CPU` when the model has a CPU subgraph at its input boundary.
+   * @param output_tensor_type Tensor type used for the model's output boundary; same semantics as
+   *                   @p input_tensor_type. Each direction is independent.
    */
-  explicit VartInferAsync(const std::string& model_path);
+  explicit VartInferAsync(const std::string& model_path,
+                          vart::TensorType input_tensor_type = vart::TensorType::HW,
+                          vart::TensorType output_tensor_type = vart::TensorType::HW);
   ~VartInferAsync();
 
   VartInferAsync(const VartInferAsync&) = delete;
@@ -52,7 +59,8 @@ class VartInferAsync {
   /** Runner used to allocate @c vart::NpuTensor buffers; outlives those tensors until destruction. */
   std::shared_ptr<vart::Runner> runner() const { return runner_; }
 
-  std::size_t batch_size() const { return batch_size_; }
+  std::size_t input_batch_size() const { return input_batch_size_; }
+  std::size_t output_batch_size() const { return output_batch_size_; }
   std::size_t num_input_tensors() const { return num_input_tensors_; }
   std::size_t num_output_tensors() const { return num_output_tensors_; }
   const std::vector<vart::NpuTensorInfo>& input_tensors_info() const { return input_tensors_info_; }
@@ -89,9 +97,14 @@ class VartInferAsync {
                         vart::JobHandle* out_handle);
 
   std::string model_path_;  ///< Compiled model path (`.rai` file or cache directory) passed to @c create_runner.
+  vart::TensorType input_tensor_type_{
+      vart::TensorType::HW};  ///< Tensor type for the input boundary (HW or CPU); selects runner option and tensor info.
+  vart::TensorType output_tensor_type_{
+      vart::TensorType::HW};  ///< Tensor type for the output boundary (HW or CPU); selects runner option and tensor info.
   std::shared_ptr<vart::Runner> runner_{};  ///< VAIML runner; owns allocation API for @c vart::NpuTensor.
 
-  std::size_t batch_size_{1};                             ///< Model batch dimension from the runner.
+  std::size_t input_batch_size_{1};                       ///< Model input-side batch dimension from the runner.
+  std::size_t output_batch_size_{1};                      ///< Model output-side batch dimension from the runner.
   std::size_t num_input_tensors_{0};                      ///< Count of HW input tensors per batch row.
   std::size_t num_output_tensors_{0};                     ///< Count of HW output tensors per batch row.
   std::vector<vart::NpuTensorInfo> input_tensors_info_;   ///< Metadata for each input tensor (layout, size).

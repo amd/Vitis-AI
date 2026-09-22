@@ -15,36 +15,34 @@ This directory contains the [**X+ML**](../../examples/docs/glossary.md#amd-softw
 
 | Folder | Purpose |
 |--------|---------|
-| [`rev-a/`](rev-a/) | VEK385 Rev-A platform build (Vivado/Vitis design, Yocto Linux, artifacts) |
-| [`rev-b/`](rev-b/) | VEK385 Rev-B platform build (Vivado/Vitis design, Yocto Linux, artifacts) |
+| [`rev-a/`](rev-a/) | **VEK385 AI Reference Design (Rev-A)** — File-based AI inferencing with PL preprocessing and AI Engine inference. Includes Vivado/Vitis design, Yocto Linux, and build artifacts. |
+| [`rev-b/`](rev-b/) | **VEK385 Rev-B Reference Designs** — Vivado/Vitis design, Yocto Linux, and build artifacts. This folder contains two reference designs: <br>• **VEK385 AI Reference Design** — file-based inferencing. <br>• **VEK385 MIPI Streaming AI Reference Design** — 4-camera MIPI streaming, AI inferencing, and 4K display. See [docs/VEK385_MIPI_Streaming_AI_Reference_Design.md](docs/VEK385_MIPI_Streaming_AI_Reference_Design.md) |
 
-Pick the folder that matches your board revision.
+Pick the folder that matches your board revision. For Rev-B, follow the AI or MIPI Streaming AI readme for the design you are building.
 
 ## Prerequisites for Platform Build
 
 ```text
-Vivado Version : 2025.2
+Vivado Version : 2026.1
 Host OS        : Ubuntu 22.04 LTS
 ```
 
 Source the required environment variables from the bash shell:
 
 ```bash
-source <VITIS_INSTALL_PATH>/2025.2/Vitis/settings64.sh
+source <VITIS_INSTALL_PATH>/2026.1/Vitis/settings64.sh
 
 # Set this variable only when using an NFS-mounted path for Yocto builds
 export YOCTO_TMP_DIR=<path_to_yocto_tmp_dir>
 ```
 
-Download and apply both AR patches required for Vitis AI 6.2 platform builds:
+Apply the following Vivado tool patches **before** running `create_pfm_hw.sh` or `create_vitis_app.sh`:
 
-- [AR000039757](https://adaptivesupport.amd.com/s/article/000039757?language=en_US) — Vivado 2025.2
-- [AR000040013](https://adaptivesupport.amd.com/s/article/000040013?language=en_US) — Vitis 2025.2
-
-Set `XILINX_PATH` to the patched Vivado and Vitis installations:
+- [AR000040517](https://adaptivesupport.amd.com/s/article/000040517?language=en_US)
+- [AR000040616](https://adaptivesupport.amd.com/s/article/000040616?language=en_US)
 
 ```bash
-export XILINX_PATH=<AR000039757_Vivado_2025_2_preliminary_rev1>/vivado:<AR000040013_vitis_patch_external>/Vitis
+export XILINX_PATH=<AR000040517_PATCH_PATH>/vivado:<AR000040616_PATCH_PATH>/vivado
 ```
 
 ## Build Steps

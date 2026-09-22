@@ -40,6 +40,10 @@ single thread**, looping `N` iterations over the full model sequence.
   2=+info) for development and debugging.
 - **Column Conflict Detection**: Validates NPU column assignments across all
   models before inference and aborts with diagnostics on conflicts.
+- **CPU Subgraph Support**: Runs models that contain CPU subgraphs at their
+  input and/or output boundary by selecting the `CPU` tensor view per direction
+  (`input-tensor-type` / `output-tensor-type`). VART executes the CPU subgraph
+  internally within the same runner — no separate runner is required.
 
 ## Usage
 
@@ -61,17 +65,17 @@ vart_multimodel_seq -c <config json file> [options]
 ### Input
 
 Each model requires one or more IFM (Input Feature Map) binary files, specified
-via the `ifm_node_file_map` field in the JSON configuration. Each IFM file must
+via the `ifm-node-file-map` field in the JSON configuration. Each IFM file must
 contain data for at least one complete frame — a "frame" is one full input tensor
 worth of data (e.g. for a model expecting a `1×3×224×224` bf16 input, one frame =
 `1×3×224×224×2` bytes).
 
-For models compiled with a batch size greater than 1, IFM files may contain
+For models compiled with an input batch size greater than 1, IFM files may contain
 multiple frames concatenated end-to-end:
 
-- **Partial batch (fewer frames than batch size):** Only the available frames
+- **Partial batch (fewer frames than input batch size):** Only the available frames
   are loaded and a `[WARN]` is logged. Inference executes with the partial batch.
-- **More frames than batch size:** Only the first `batch_size` frames are
+- **More frames than input batch size:** Only the first `input_batch_size` frames are
   loaded. The remaining frames are ignored and a `[WARN]` is logged.
 
 > **Note 1:** When multiple iterations are specified (`-r N`), the same input
@@ -80,7 +84,7 @@ multiple frames concatenated end-to-end:
 > benchmarking rather than for processing different inputs.
 
 > **Note 2:** Each model input tensor must be mapped to an IFM file in the JSON
-> config using `ifm_node_file_map`, where the key is the model's input node name.
+> config using `ifm-node-file-map`, where the key is the model's input node name.
 > If unsure of node names, provide any name—the application will validate during
 > initialization and print a diagnostic table for each model showing:
 >
@@ -94,10 +98,10 @@ multiple frames concatenated end-to-end:
 
 OFM (Output Feature Map) results are written as one binary file per OFM tensor
 node (`<node_name>_<shape>_<datatype>.bin`). Each model's outputs are stored in a
-dedicated subdirectory within `ofm_dir`, named `ofm_model_1/`, `ofm_model_2/`,
+dedicated subdirectory within `ofm-dir`, named `ofm_model_1/`, `ofm_model_2/`,
 etc. (numbered by their order in the JSON config, starting from 1). When
 `batch_size > 1`, all batch frames are concatenated into the same file per OFM
-node. If `ofm_dir` is not specified in the JSON config, it defaults to the
+node. If `ofm-dir` is not specified in the JSON config, it defaults to the
 current working directory (`"./"`). Only the results from the last iteration
 are saved. Skipped when `--dry-run` is set.
 
@@ -132,7 +136,7 @@ Before running the commands below, finish board setup for your platform, program
 1. Set up the board environment:
 
 ```bash
-export LD_LIBRARY_PATH=/usr/lib/python3.12/site-packages/voe/lib:/usr/lib/python3.12/site-packages/flexmlrt/lib:/usr/lib/python3.12/site-packages/onnxruntime/capi
+export LD_LIBRARY_PATH=/usr/lib/python3.12/site-packages/voe/lib:/usr/lib/python3.12/site-packages/flexmlrt/lib:/usr/lib/python3.12/site-packages/onnxruntime/capi:/usr/lib/python3.12/site-packages/vart_ml/lib:/usr/lib/python3.12/site-packages/vart_x/lib
 ```
 
 2. The following pre-built configuration is available on the board and can be
@@ -182,9 +186,9 @@ For details about the JSON configuration schema, please refer to [json_configs/R
 
 ---
 
-## How `start_column` and `aie_columns_sharing` are Configured
+## How `start-column` and `aie-columns-sharing` are Configured
 
-The `start_column` and `aie_columns_sharing` options are read from the JSON
+The `start-column` and `aie-columns-sharing` options are read from the JSON
 configuration file and passed to the `vart::Runner` as shown in the code snippet
 below:
 
@@ -211,16 +215,103 @@ m_runner = vart::RunnerFactory::create_runner(
 
 Key points:
 
-- **`start_column`** — `uint32_t`. Selects the
+- **`start-column`** — `uint32_t`. Selects the
   first NPU column the model is placed on.
-- **`aie_columns_sharing`** — `bool`. `true` = shared/temporal (column block
+- **`aie-columns-sharing`** — `bool`. `true` = shared/temporal (column block
   is time-multiplexed with other models that target the same columns);
   `false` = exclusive/spatial (column block is owned by this model only).
 - **Conflict detection** — `utils::load_config()` cross-checks all model
   entries: if any two models have overlapping column ranges and at least one
-  sets `aie_columns_sharing=false`, the application aborts with a
+  sets `aie-columns-sharing=false`, the application aborts with a
   diagnostic before any runner is created.
 
+
+## CPU Subgraph Support
+
+A Vitis AI–compiled model is not always executed entirely on the NPU. Some
+operations may be unsupported on (or better suited to) the CPU. The compiler
+places those operations in **CPU subgraphs** that run on the host CPU, while the
+rest of the model runs on the NPU. A single compiled model can therefore have a
+CPU subgraph at its **input** boundary, its **output** boundary, both, or
+neither.
+
+VART-ML executes these CPU subgraphs **internally, within the same
+`vart::Runner`** — no separate runner and no extra `execute()` call are required.
+The only requirement is that the application select the correct tensor *view* for
+each direction when the runner is created.
+
+### Tensor views: `CPU` vs `HW`
+
+For each direction (input and output) the runner can expose the tensors in one
+of two formats:
+
+| View  | Format                                | Typical data type / layout |
+| ----- | ------------------------------------- | -------------------------- |
+| `HW`  | Hardware-native (NPU-accepted) format | e.g. BF16, HCWNC4 layout   |
+| `CPU` | Standard ONNX format                  | e.g. FP32, NCHW layout     |
+
+Rules:
+
+- A boundary that is a **CPU subgraph** has **no HW tensor view** for that
+  direction — it must use the `CPU` view. Creating the runner with `HW` for such
+  a direction **fails**.
+- A boundary that is an **NPU (HW) subgraph** can use **either** `CPU` or `HW`.
+
+### Configuring the tensor view
+
+Two optional per-model JSON fields select the view independently per direction:
+
+| Field                | Type   | Default | Values       | Description                               |
+| -------------------- | ------ | ------- | ------------ | ----------------------------------------- |
+| `input-tensor-type`  | String | `HW`    | `CPU` / `HW` | View used for the model's input tensors.  |
+| `output-tensor-type` | String | `HW`    | `CPU` / `HW` | View used for the model's output tensors. |
+
+Behaviour:
+
+- **Field not specified** → defaults to `HW` (fully backward compatible).
+- **`CPU` / `HW`** (case-insensitive) → used as given.
+- **Any other value** → the application prints a diagnostic and exits.
+
+The selected views are forwarded to the runner via the same options bag shown in
+the previous section (`input_tensor_type` / `output_tensor_type` keys).
+
+> **Important:** When a direction uses the `CPU` view, the corresponding IFM /
+> OFM binary files must be in standard **ONNX format** (matching the CPU tensor
+> shapes and data types), not the HW-native layout. IFM file sizes are validated
+> against the CPU tensor sizes during initialization.
+
+### Sample `config.json`
+
+The example below runs two models sequentially. `Model_1` has a CPU subgraph at
+its input boundary (so it uses `input-tensor-type: "CPU"`) and an NPU output;
+`Model_2` has CPU subgraphs at **both** boundaries:
+
+```json
+[
+  {
+    "model-cache-path": "/etc/vai/models/modelA/modelA.rai",
+    "start-column": 0,
+    "aie-columns-sharing": true,
+    "input-tensor-type": "CPU",
+    "output-tensor-type": "HW",
+    "ifm-node-file-map": {
+      "input": "/etc/vai/models/modelA/data/ifm_input_fp32_1x3x224x224.bin"
+    },
+    "ofm-dir": "./"
+  },
+  {
+    "model-cache-path": "/etc/vai/models/modelB/modelB.rai",
+    "start-column": 0,
+    "aie-columns-sharing": true,
+    "input-tensor-type": "CPU",
+    "output-tensor-type": "CPU",
+    "ifm-node-file-map": {
+      "input": "/etc/vai/models/modelB/data/ifm_input_fp32_1x3x224x224.bin"
+    },
+    "ofm-dir": "./"
+  }
+]
+```
 
 ## NPU Column Sharing Modes
 
@@ -237,9 +328,9 @@ during compilation. No column or sharing configuration is needed.
 ```json
 [
   {
-    "model_cache_path": "/opt/models/model_a/cache",
-    "ifm_node_file_map": { "input_node": "/data/model_a/inputs/input.bin" },
-    "ofm_dir": "/data/model_a/outputs"
+    "model-cache-path": "/opt/models/model_a/cache",
+    "ifm-node-file-map": { "input_node": "/data/model_a/inputs/input.bin" },
+    "ofm-dir": "/data/model_a/outputs"
   }
 ]
 ```
@@ -249,7 +340,7 @@ during compilation. No column or sharing configuration is needed.
 In temporal sharing, multiple models are mapped to the **same** set of NPU
 columns. The NPU time-multiplexes between them so that only one model executes
 on those columns at any given moment. This is configured by setting
-`start_column` to the **same** value and `aie_columns_sharing` to **`"true"`**
+`start-column` to the **same** value and `aie-columns-sharing` to **`true`**
 for every model.
 
 Temporal sharing is the natural fit for this sequential application — models
@@ -269,25 +360,25 @@ columns.
 
 Key settings (highlighted):
 
-- **`start_column`** — must be **identical** across all models that share the
+- **`start-column`** — must be **identical** across all models that share the
   block (e.g. all set to `0` to share columns 0–3).
-- **`aie_columns_sharing`** — must be **`"true"`** on every sharing model.
+- **`aie-columns-sharing`** — must be **`true`** on every sharing model.
 
 ```json
 [
   {
-    "model_cache_path": "/opt/models/model_a/cache",
-    "start_column": 0,
-    "aie_columns_sharing": "true",
-    "ifm_node_file_map": { "input_node": "/data/model_a/inputs/input.bin" },
-    "ofm_dir": "/data/model_a/outputs"
+    "model-cache-path": "/opt/models/model_a/cache",
+    "start-column": 0,
+    "aie-columns-sharing": true,
+    "ifm-node-file-map": { "input_node": "/data/model_a/inputs/input.bin" },
+    "ofm-dir": "/data/model_a/outputs"
   },
   {
-    "model_cache_path": "/opt/models/model_b/cache",
-    "start_column": 0,
-    "aie_columns_sharing": "true",
-    "ifm_node_file_map": { "input_node": "/data/model_b/inputs/input.bin" },
-    "ofm_dir": "/data/model_b/outputs"
+    "model-cache-path": "/opt/models/model_b/cache",
+    "start-column": 0,
+    "aie-columns-sharing": true,
+    "ifm-node-file-map": { "input_node": "/data/model_b/inputs/input.bin" },
+    "ofm-dir": "/data/model_b/outputs"
   }
 ]
 ```
@@ -297,8 +388,8 @@ Key settings (highlighted):
 In spatial sharing, each model is assigned its **own separate** set of NPU
 columns. Because the column ranges do not overlap, each model has dedicated
 hardware with no context-switch overhead. This is configured by giving each
-model a **different** `start_column` value and setting `aie_columns_sharing`
-to **`"false"`**.
+model a **different** `start-column` value and setting `aie-columns-sharing`
+to **`false`**.
 
 In this sequential application, models still execute one after another (single
 thread by design), but each model runs on its own dedicated column block —
@@ -319,7 +410,7 @@ column slice.
 </p>
 
 Each model owns a **separate** set of NPU columns with
-`aie_columns_sharing = "false"`. Models still execute sequentially in this app
+`aie-columns-sharing = false`. Models still execute sequentially in this app
 (single thread by design) but on dedicated column blocks.
 
 > **Note 1:** When running models in spatial mode, ensure that there is
@@ -363,33 +454,33 @@ Each model owns a **separate** set of NPU columns with
 
 Key settings (highlighted):
 
-- **`start_column`** — must be **distinct** per model and aligned to the
+- **`start-column`** — must be **distinct** per model and aligned to the
   4-column overlay (e.g. `0`, `4`, `8`, ...). Two models must not map to
   overlapping column ranges.
-- **`aie_columns_sharing`** — set to **`"false"`** for exclusive column
+- **`aie-columns-sharing`** — set to **`false`** for exclusive column
   reservation (no swapping with other models).
 
-> **Note 2:** `aie_columns_sharing` does not need to be `false` for spatial
-> sharing. Models can still be spatially shared by controlling `start_column`
-> alone. Setting `aie_columns_sharing` to `false` exclusively reserves those
+> **Note 2:** `aie-columns-sharing` does not need to be `false` for spatial
+> sharing. Models can still be spatially shared by controlling `start-column`
+> alone. Setting `aie-columns-sharing` to `false` exclusively reserves those
 > columns for that model, preventing any swapping or time-multiplexing on
 > those columns.
 
 ```json
 [
   {
-    "model_cache_path": "/opt/models/model_a/cache",
-    "start_column": 0,
-    "aie_columns_sharing": "false",
-    "ifm_node_file_map": { "input_node": "/data/model_a/inputs/input.bin" },
-    "ofm_dir": "/data/model_a/outputs"
+    "model-cache-path": "/opt/models/model_a/cache",
+    "start-column": 0,
+    "aie-columns-sharing": false,
+    "ifm-node-file-map": { "input_node": "/data/model_a/inputs/input.bin" },
+    "ofm-dir": "/data/model_a/outputs"
   },
   {
-    "model_cache_path": "/opt/models/model_b/cache",
-    "start_column": 4,
-    "aie_columns_sharing": "false",
-    "ifm_node_file_map": { "input_node": "/data/model_b/inputs/input.bin" },
-    "ofm_dir": "/data/model_b/outputs"
+    "model-cache-path": "/opt/models/model_b/cache",
+    "start-column": 4,
+    "aie-columns-sharing": false,
+    "ifm-node-file-map": { "input_node": "/data/model_b/inputs/input.bin" },
+    "ofm-dir": "/data/model_b/outputs"
   }
 ]
 ```
@@ -400,8 +491,8 @@ Temporal and spatial sharing can coexist in a single deployment. A subset of
 models is configured to time-multiplex on a shared column range (temporal),
 while one or more other models are each assigned their own exclusive column
 range (spatial). In the example below, Model_1 and Model_2 share columns 0–3
-with `aie_columns_sharing = true`, while Model_3 exclusively owns columns 4–7
-with `aie_columns_sharing = false`.
+with `aie-columns-sharing = true`, while Model_3 exclusively owns columns 4–7
+with `aie-columns-sharing = false`.
 
 The diagram below illustrates the combined mode. Columns 0–3 are shared
 temporally by Model A (green) and Model B (purple) — they take turns on the
@@ -415,33 +506,33 @@ runs in parallel on dedicated hardware. The remaining columns are unused
 
 Key settings (highlighted):
 
-- **`start_column`** — use the **same** value across all models in a temporal
+- **`start-column`** — use the **same** value across all models in a temporal
   group, and a **different**, non-overlapping value for each spatial model.
-- **`aie_columns_sharing`** — set to **`"true"`** for every model in a temporal
-  group, and **`"false"`** for spatial (exclusive) models.
+- **`aie-columns-sharing`** — set to **`true`** for every model in a temporal
+  group, and **`false`** for spatial (exclusive) models.
 
 ```json
 [
   {
-    "model_cache_path": "/opt/models/model_a/cache",
-    "start_column": 0,
-    "aie_columns_sharing": "true",
-    "ifm_node_file_map": { "input_node": "/data/model_a/inputs/input.bin" },
-    "ofm_dir": "/data/model_a/outputs"
+    "model-cache-path": "/opt/models/model_a/cache",
+    "start-column": 0,
+    "aie-columns-sharing": true,
+    "ifm-node-file-map": { "input_node": "/data/model_a/inputs/input.bin" },
+    "ofm-dir": "/data/model_a/outputs"
   },
   {
-    "model_cache_path": "/opt/models/model_b/cache",
-    "start_column": 0,
-    "aie_columns_sharing": "true",
-    "ifm_node_file_map": { "input_node": "/data/model_b/inputs/input.bin" },
-    "ofm_dir": "/data/model_b/outputs"
+    "model-cache-path": "/opt/models/model_b/cache",
+    "start-column": 0,
+    "aie-columns-sharing": true,
+    "ifm-node-file-map": { "input_node": "/data/model_b/inputs/input.bin" },
+    "ofm-dir": "/data/model_b/outputs"
   },
   {
-    "model_cache_path": "/opt/models/model_c/cache",
-    "start_column": 4,
-    "aie_columns_sharing": "false",
-    "ifm_node_file_map": { "input_node": "/data/model_c/inputs/input.bin" },
-    "ofm_dir": "/data/model_c/outputs"
+    "model-cache-path": "/opt/models/model_c/cache",
+    "start-column": 4,
+    "aie-columns-sharing": false,
+    "ifm-node-file-map": { "input_node": "/data/model_c/inputs/input.bin" },
+    "ofm-dir": "/data/model_c/outputs"
   }
 ]
 ```
@@ -474,25 +565,25 @@ columns 0–3:
 
 ```
 AIE Partitions
-  Total Memory Usage: N/A
+  Total NPU Memory Usage: N/A
   Partition Index   : 0
     Columns: [0, 1, 2, 3]
     HW Contexts:
-      |PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
-      |Process Name        |Status     |Completions |Suspensions |     |GOPS     |
-      |Memory Usage        |Instr BO   |            |            |     |FPS      |
-      |                    |           |            |            |     |Latency  |
-      |====================|===========|============|============|=====|=========|
-      |1196                |1          |98          |0           |0    |Normal   |
-      |N/A                 |Idle       |97          |0           |     |1        |
-      |66 MB               |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
-      |1196                |2          |120         |0           |0    |Normal   |
-      |N/A                 |Idle       |119         |0           |     |1        |
-      |66 MB               |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
+      |PID                 |Ctx ID     |Submissions |Migrations  |Frame Evts |Err  |Priority |
+      |Process Name        |Status     |Completions |Suspensions |Layer Evts |     |GOPS     |
+      |NPU Memory Usage    |Instr BO   |            |            |           |     |FPS      |
+      |                    |           |            |            |           |     |Latency  |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1196                |1          |98          |0           |0          |0    |Normal   |
+      |N/A                 |Idle       |97          |0           |0          |     |1        |
+      |66 MB               |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1196                |2          |120         |0           |0          |0    |Normal   |
+      |N/A                 |Idle       |119         |0           |0          |     |1        |
+      |66 MB               |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
 ```
 
 #### Spatial sharing
@@ -502,32 +593,32 @@ set. The two partitions run in parallel on separate hardware.
 
 ```
 AIE Partitions
-  Total Memory Usage: N/A
+  Total NPU Memory Usage: N/A
   Partition Index   : 0
     Columns: [0, 1, 2, 3]
     HW Contexts:
-      |PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
-      |Process Name        |Status     |Completions |Suspensions |     |GOPS     |
-      |Memory Usage        |Instr BO   |            |            |     |FPS      |
-      |                    |           |            |            |     |Latency  |
-      |====================|===========|============|============|=====|=========|
-      |1179                |1          |870         |0           |0    |Realtime |
-      |N/A                 |Idle       |869         |0           |     |1        |
-      |66 MB               |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
+      |PID                 |Ctx ID     |Submissions |Migrations  |Frame Evts |Err  |Priority |
+      |Process Name        |Status     |Completions |Suspensions |Layer Evts |     |GOPS     |
+      |NPU Memory Usage    |Instr BO   |            |            |           |     |FPS      |
+      |                    |           |            |            |           |     |Latency  |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1179                |1          |870         |0           |0          |0    |Realtime |
+      |N/A                 |Idle       |869         |0           |0          |     |1        |
+      |66 MB               |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
   Partition Index   : 1
     Columns: [4, 5, 6, 7]
     HW Contexts:
-      |PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
-      |Process Name        |Status     |Completions |Suspensions |     |GOPS     |
-      |Memory Usage        |Instr BO   |            |            |     |FPS      |
-      |                    |           |            |            |     |Latency  |
-      |====================|===========|============|============|=====|=========|
-      |1179                |2          |1000        |0           |0    |Realtime |
-      |N/A                 |Active     |1000        |0           |     |1        |
-      |66 MB               |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
+      |PID                 |Ctx ID     |Submissions |Migrations  |Frame Evts |Err  |Priority |
+      |Process Name        |Status     |Completions |Suspensions |Layer Evts |     |GOPS     |
+      |NPU Memory Usage    |Instr BO   |            |            |           |     |FPS      |
+      |                    |           |            |            |           |     |Latency  |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1179                |2          |1000        |0           |0          |0    |Realtime |
+      |N/A                 |Active     |1000        |0           |0          |     |1        |
+      |66 MB               |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
 ```
 
 #### Combined spatial + temporal sharing
@@ -538,38 +629,38 @@ has a single HW Context running exclusively.
 
 ```
 AIE Partitions
-  Total Memory Usage: N/A
+  Total NPU Memory Usage: N/A
   Partition Index   : 0
     Columns: [0, 1, 2, 3]
     HW Contexts:
-      |PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
-      |Process Name        |Status     |Completions |Suspensions |     |GOPS     |
-      |Memory Usage        |Instr BO   |            |            |     |FPS      |
-      |                    |           |            |            |     |Latency  |
-      |====================|===========|============|============|=====|=========|
-      |1213                |1          |39          |0           |0    |Normal   |
-      |N/A                 |Idle       |38          |0           |     |1        |
-      |106 MB              |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
-      |1213                |2          |40          |0           |0    |Normal   |
-      |N/A                 |Idle       |39          |0           |     |1        |
-      |106 MB              |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
+      |PID                 |Ctx ID     |Submissions |Migrations  |Frame Evts |Err  |Priority |
+      |Process Name        |Status     |Completions |Suspensions |Layer Evts |     |GOPS     |
+      |NPU Memory Usage    |Instr BO   |            |            |           |     |FPS      |
+      |                    |           |            |            |           |     |Latency  |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1213                |1          |39          |0           |0          |0    |Normal   |
+      |N/A                 |Idle       |38          |0           |0          |     |1        |
+      |106 MB              |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1213                |2          |40          |0           |0          |0    |Normal   |
+      |N/A                 |Idle       |39          |0           |0          |     |1        |
+      |106 MB              |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
   Partition Index   : 1
     Columns: [4, 5, 6, 7]
     HW Contexts:
-      |PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
-      |Process Name        |Status     |Completions |Suspensions |     |GOPS     |
-      |Memory Usage        |Instr BO   |            |            |     |FPS      |
-      |                    |           |            |            |     |Latency  |
-      |====================|===========|============|============|=====|=========|
-      |1213                |3          |46          |0           |0    |Realtime |
-      |N/A                 |Idle       |45          |0           |     |1        |
-      |106 MB              |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
+      |PID                 |Ctx ID     |Submissions |Migrations  |Frame Evts |Err  |Priority |
+      |Process Name        |Status     |Completions |Suspensions |Layer Evts |     |GOPS     |
+      |NPU Memory Usage    |Instr BO   |            |            |           |     |FPS      |
+      |                    |           |            |            |           |     |Latency  |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1213                |3          |46          |0           |0          |0    |Realtime |
+      |N/A                 |Idle       |45          |0           |0          |     |1        |
+      |106 MB              |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
 ```
 
 
@@ -620,7 +711,7 @@ The application runs in four phases, all in a single thread:
 
 **Phase 2 — Allocate & Load IFMs** (per-model, once):
 1. Allocate IFM and OFM `NpuTensor` buffers — one set per batch slot, where
-   the batch size is queried from `m_runner->get_batch_size()`.
+   the batch size is queried from `m_runner->get_batch_size(vart::TensorDirection::INPUT)`.
 2. Load IFM binary files into the input tensors. A single IFM file may
    contain `1..batch_size` consecutive frames; if it contains fewer than
    `batch_size` the remaining slots are left at zero and a `[WARN]` is
@@ -638,15 +729,20 @@ for iter in 0..iterations:
 1. Save the OFMs of each model once (results from the last iteration).
    OFM results are written as one binary file per OFM tensor node
    (`<node_name>_<shape>_<datatype>.bin`). Each model's outputs are stored in a
-   dedicated subdirectory within `ofm_dir`, named `ofm_model_1/`, `ofm_model_2/`,
+   dedicated subdirectory within `ofm-dir`, named `ofm_model_1/`, `ofm_model_2/`,
    etc. (numbered by their order in the JSON config, starting from 1). This
    prevents OFM files from being overwritten when the same model appears multiple
    times in the config. When `batch_size > 1`, all batch frames are concatenated
    into the same file per OFM node. Skipped when `--dry-run` is set.
 2. Print an Execution Summary table showing per-model AI Engine column placement
   and OFM-save status.
-3. Print a separate Performance table showing per-model iteration count and
-  average latency.
+3. Print a one-line iteration-count note (`Benchmark: N iteration(s) per model ...`)
+  followed by a separate `Performance` table showing, per model, the
+  `Average Inference Time` (`ms/inference (dp_size=N)`, where `N` is that model's
+  Data Parallelism size - the model is replicated across `N` HW instances, and one
+  inference call runs it in parallel on all of them at once) and `Average Throughput`
+  (FPS). The reported values are per-iteration averages, so the iteration count is
+  printed once as context rather than as a table column. Printed only with `-b/--benchmark`.
 
 
 ## Sample Output
@@ -659,6 +755,21 @@ Start Column | Model   | OFMs file saved
 0 (shared)   | Model_1 | /data/model_a/outputs/ofm_model_1/output_QuantizeLinear_Output_1x1000_int8.bin
 0 (shared)   | Model_2 | /data/model_b/outputs/ofm_model_2/output_QuantizeLinear_Output_1x1000_int8.bin
 ------------+---------+------------------------------------------------------------------------
+```
+
+With `-b/--benchmark`, a `Performance` table follows, preceded by the iteration
+count (measured values shown here as `xx` placeholders):
+
+```
+Benchmark: 100 iteration(s) per model (values are per-iteration averages).
++---------+---------------------------------+--------------------+
+|                       Performance                              |
++---------+---------------------------------+--------------------+
+| Model   | Average Inference Time          | Average Throughput |
++---------+---------------------------------+--------------------+
+| Model_1 | xx.xx ms/inference (dp_size=1)  | xxx.xx FPS         |
+| Model_2 | xx.xx ms/inference (dp_size=1)  | xxx.xx FPS         |
++---------+---------------------------------+--------------------+
 ```
 
 

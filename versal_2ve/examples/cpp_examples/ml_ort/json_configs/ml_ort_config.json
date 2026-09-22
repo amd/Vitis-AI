@@ -8,10 +8,10 @@
       }
     ],
     "execution-provider-options": {
-      "config_file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
+      "config-file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
       "target": "VAIML",
-      "cache_dir": "/etc/vai/models",
-      "cache_key": "resnet50_int8"
+      "cache-dir": "/etc/vai/models",
+      "cache-key": "resnet50_int8"
     }
   }
 }

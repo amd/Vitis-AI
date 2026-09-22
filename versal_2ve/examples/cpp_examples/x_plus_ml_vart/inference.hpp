@@ -88,6 +88,9 @@ struct InferenceConfig {
   std::unordered_map<std::string, std::any> runner_options;
   vart::TensorType input_tensor_type;
   vart::TensorType output_tensor_type;
+  /** Per-tensor type overrides keyed by runner-reported tensor name. */
+  std::unordered_map<std::string, std::string> in_tensor_type_map;
+  std::unordered_map<std::string, std::string> out_tensor_type_map;
 
   /* Output directory path to dump output files */
   std::string output_dir_path;
@@ -106,7 +109,8 @@ struct InferenceConfig {
   /* model metadata extracted from snapshot */
   uint32_t model_width;
   uint32_t model_height;
-  uint32_t batch_size;
+  uint32_t batch_size;         ///< Input-side batch size (drives file reader/preprocess/queue sizing)
+  uint32_t output_batch_size;  ///< Output-side batch size (drives OFM tensor pool sizing only)
   size_t num_in_tensors;
   size_t num_out_tensors;
   std::vector<InferTensorInfo> in_tensors_info;
@@ -129,6 +133,8 @@ struct InferenceConfig {
         runner_options(),
         input_tensor_type(vart::TensorType::HW),
         output_tensor_type(vart::TensorType::HW),
+        in_tensor_type_map(),
+        out_tensor_type_map(),
         output_dir_path(""),
         dump_all_inputs(false),
         is_benchmark_enabled(false),
@@ -139,6 +145,7 @@ struct InferenceConfig {
         model_width(224),
         model_height(224),
         batch_size(1),
+        output_batch_size(1),
         num_in_tensors(0),
         num_out_tensors(0),
         in_tensors_info(),
@@ -218,11 +225,17 @@ class Inference {
   std::vector<OutputTensorCache> output_tensor_cache_;  ///< Per output tensor index
 
   void worker_thread_function();
-  bool process_video_frame(BatchedFrames&& input_frames, int frame_index, int64_t iteration_number);
+  bool process_video_frame(BatchedFrames&& input_frames,
+                           int frame_index,
+                           int64_t iteration_number,
+                           std::vector<vart::InferResScaleInfo>&& scale_info);
   BatchedTensors run_inference_on_frame(BatchedFrames input_frames, int frame_index, int64_t iteration_number);
   bool create_inference_runner();
   bool create_output_tensor_pools();
   TensorList acquire_output_tensors();
+  bool resolve_tensors_for_direction(vart::TensorDirection direction, vart::TensorType global_type,
+                                     const std::unordered_map<std::string, std::string>& per_tensor_type_map,
+                                     std::vector<vart::NpuTensorInfo>& resolved_tensors_info);
 
   // Cache management methods
   void clear_tensor_cache();            ///< Clear all cached tensors

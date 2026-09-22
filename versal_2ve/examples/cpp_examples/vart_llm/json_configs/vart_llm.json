@@ -1,0 +1,24 @@
+{
+  "inference-config": {
+    "model-file": "/etc/vai/models/llm-model/model.rai",
+    "runner-options": {
+      "ai-analyzer-profiling": false,
+      "input-ids-name": "input_ids",
+      "attention-mask-name": "attention_mask",
+      "logits-name": "logits",
+      "input-tensor-type": "CPU",
+      "output-tensor-type": "HW"
+    }
+  },
+  "tokenizer-config": {
+    "tokenizer-path": "/etc/vai/models/llm-model",
+    "prompt-format": "olmo",
+    "system-prompt": ""
+  },
+  "sampler-config": {
+    "sampler": "greedy",
+    "seed": 0,
+    "rep-penalty": 1.0,
+    "no-repeat-ngram": 0
+  }
+}

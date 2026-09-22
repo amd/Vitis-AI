@@ -368,6 +368,11 @@ class AppFileReader {
   void update_read_counters(size_t batch_size, uint32_t num_submissions);
 
   /**
+   * @brief Finish output queues to wake threads blocked in push/pop
+   */
+  void finish_output_queues();
+
+  /**
    * @brief Handle queue submission failure (set error flags, signal app)
    */
   void handle_queue_submission_failure();

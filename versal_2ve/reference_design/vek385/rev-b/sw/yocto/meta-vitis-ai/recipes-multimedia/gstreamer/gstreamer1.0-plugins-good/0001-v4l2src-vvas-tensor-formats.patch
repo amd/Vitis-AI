@@ -1,0 +1,69 @@
+Upstream-Status: Pending
+
+diff --git a/sys/v4l2/gstv4l2object.c b/sys/v4l2/gstv4l2object.c
+index 38fe1a0693..c499fb74d1 100644
+@@ -1624,11 +1624,9 @@ gst_v4l2_object_v4l2fourcc_to_video_format (guint32 fourcc)
+       format = GST_VIDEO_FORMAT_ARGB;
+       break;
+     case V4L2_PIX_FMT_HCWNC4_8_4_4:
+-      format = GST_VIDEO_FORMAT_RGBA8_C4;
+-      break;
+     case V4L2_PIX_FMT_HCWNC4_8_4_3:
+     case V4L2_PIX_FMT_HCWNC4_8_3_3:
+-      format = GST_VIDEO_FORMAT_RGBX8_C4;
++      format = GST_VIDEO_FORMAT_RGBx;
+       break;
+     case V4L2_PIX_FMT_HCWNC8_8_4_4:
+       format = GST_VIDEO_FORMAT_RGBA8_C8;
+@@ -1668,16 +1668,16 @@ gst_v4l2_object_v4l2fourcc_to_video_format (guint32 fourcc)
+       format = GST_VIDEO_FORMAT_BGR_FLOAT;
+       break;
+     case V4L2_PIX_FMT_BGRA8888:
+-      format = GST_VIDEO_FORMAT_BGRA8;
++      format = GST_VIDEO_FORMAT_BGRA8_C4;
+       break;
+     case V4L2_PIX_FMT_BGRA_BF64:
+-      format = GST_VIDEO_FORMAT_BGRA_BF16;
++      format = GST_VIDEO_FORMAT_BGRA_BF16_C4;
+       break;
+     case V4L2_PIX_FMT_BGRA_FP64:
+-      format = GST_VIDEO_FORMAT_BGRA_FP16;
++      format = GST_VIDEO_FORMAT_BGRA_FP16_C4;
+       break;
+     case V4L2_PIX_FMT_BGRA32323232:
+-      format = GST_VIDEO_FORMAT_BGRA_FLOAT;
++      format = GST_VIDEO_FORMAT_BGRA_FLOAT_C4;
+       break;
+     case V4L2_PIX_FMT_BGR24M:
+     case V4L2_PIX_FMT_BGR_24M_4_3:
+@@ -2678,7 +2678,8 @@ gst_v4l2_object_get_caps_info (GstV4l2Object * v4l2object, GstCaps * caps,
+         fourcc_nc = V4L2_PIX_FMT_XRGB32;
+         break;
+       case GST_VIDEO_FORMAT_RGBx:
+-        fourcc = V4L2_PIX_FMT_RGBX32;
++        fourcc = V4L2_PIX_FMT_HCWNC4_8_4_4;
++        fourcc_alt = V4L2_PIX_FMT_RGBX32;
+         break;
+       case GST_VIDEO_FORMAT_ARGB:
+         fourcc = V4L2_PIX_FMT_RGB32;
+@@ -2768,16 +2768,16 @@ gst_v4l2_object_get_caps_info (GstV4l2Object * v4l2object, GstCaps * caps,
+       case GST_VIDEO_FORMAT_BGR_FLOAT:
+         fourcc = V4L2_PIX_FMT_BGR_323232;
+         break;
+-      case GST_VIDEO_FORMAT_BGRA8:
++      case GST_VIDEO_FORMAT_BGRA8_C4:
+         fourcc = V4L2_PIX_FMT_BGRA8888;
+         break;
+-      case GST_VIDEO_FORMAT_BGRA_BF16:
++      case GST_VIDEO_FORMAT_BGRA_BF16_C4:
+         fourcc = V4L2_PIX_FMT_BGRA_BF64;
+         break;
+-      case GST_VIDEO_FORMAT_BGRA_FP16:
++      case GST_VIDEO_FORMAT_BGRA_FP16_C4:
+         fourcc = V4L2_PIX_FMT_BGRA_FP64;
+         break;
+-      case GST_VIDEO_FORMAT_BGRA_FLOAT:
++      case GST_VIDEO_FORMAT_BGRA_FLOAT_C4:
+         fourcc = V4L2_PIX_FMT_BGRA32323232;
+         break;
+       case GST_VIDEO_FORMAT_BGR8P:

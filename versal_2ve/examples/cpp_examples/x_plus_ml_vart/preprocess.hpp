@@ -101,8 +101,6 @@ struct PreProcessConfig {
 
   // Logging and processing options
   AppLogLevel log_level;  ///< Component log level
-  bool do_pan_scan;       ///< Enable pan-scan cropping
-
   // JSON configuration for VART PreProcess initialization
   std::string json_str;                  ///< JSON configuration string for VART PreProcess
   std::string colour_format_str;         ///< Colour-format from JSON (optional; e.g. "RGBX", "RGB", "BGR_FLOAT", ...)
@@ -136,7 +134,6 @@ struct PreProcessConfig {
         instance_id(0),
         num_model_instances(1),
         log_level(AppLogLevel::WARNING),
-        do_pan_scan(false),
         json_str(""),
         colour_format_str(""),
         preprocess_info(),
@@ -293,12 +290,7 @@ class AppPreProcess {
   bool process_frame_with_vart(std::shared_ptr<vart::VideoFrame> input_frame,
                                std::shared_ptr<vart::VideoFrame> output_frame,
                                int frame_index,
-                               int64_t iteration_number);
+                               int64_t iteration_number, 
+                               vart::InferResScaleInfo& scale_info);
 
-  /**
-   * @brief Set ROI for PanScan cropping
-   * @param preprocess_op PreProcess operation to modify
-   * @param config Configuration containing PanScan settings and log level
-   */
-  void set_roi_pan_scan(vart::PreProcessOp& preprocess_op);
 };

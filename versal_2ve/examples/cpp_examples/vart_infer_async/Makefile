@@ -16,8 +16,10 @@
 
 .DEFAULT_GOAL:=all
 
+include ../common/vart-ml-version.mk
+
 check_dependencies:
-	@pkg-config --atleast-version=0.1 vart-ml || (echo "Error: vart-ml version 0.1 or later is required."; exit 1)
+	@pkg-config --atleast-version=$(VART_ML_MIN_VERSION) vart-ml || (echo "Error: vart-ml version $(VART_ML_MIN_VERSION) or later is required."; exit 1)
 
 CFLAGS+= -Wall -Wextra -Wpedantic -Wunused -Wformat -Wdeprecated -Wdisabled-optimization -Wuninitialized -std=c++17
 CFLAGS+= `pkg-config --cflags vart-ml`

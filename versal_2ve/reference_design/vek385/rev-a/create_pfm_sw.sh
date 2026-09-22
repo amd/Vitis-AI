@@ -16,16 +16,19 @@
 # limitations under the License.
 #
 # Description:
-#   bash script to build the platform software
+#   Variant of create_pfm_sw.sh that strips the
+#   vek385-reva-linux-overlay.yaml domain-file reference out of the fetched
+#   multidomain machine yaml before parse-sdt, so the generated dtb only
+#   contains chip/PS/PL-derived nodes, without the board-overlay nodes.
 #
+
+set +x
 
 CUR_DIR=$(pwd)
 
-SDTGEN_TCL="$CUR_DIR/sw/yocto/sdtgen.tcl"
-SDT_OUTPUT="$CUR_DIR/sw/yocto/build/sdt_outdir"
-BOARD_DTSI="versal2-vek385-reva"
-X4_XSA="$CUR_DIR/hw/example_design_pfm_fixed.xsa"
+SDT_OUTPUT="$CUR_DIR/hw/sdt_outdir"
 VEK385_LAYER="meta-vek385"
+MACHINE_YAML="$CUR_DIR/sw/yocto/sources/meta-amd-adaptive-socs/meta-amd-adaptive-socs-bsp/conf/machineyaml/versal-2ve-2vm-vek385-multidomain.yaml"
 
 # Remove trailing '/' in path
 if [ ! -z YOCTO_TMP_DIR ]; then
@@ -93,23 +96,20 @@ if [ ! -d $CUR_DIR/sw/yocto/sources/$VEK385_LAYER ]; then
   bitbake-layers add-layer $CUR_DIR/sw/yocto/sources/$VEK385_LAYER
 fi
 
-# Run sdtgen to generate DTS
-if sdtgen "$SDTGEN_TCL" -xsa_path "$X4_XSA" -sdt_path "$SDT_OUTPUT" -board_dts \
-          "$BOARD_DTSI"; then
-  echo "SDTGen ran successfully and output directory exists."
-else
-  echo "SDTGen failed or output directory not created."
+# Strip the linux-overlay domain-file reference from the fetched machine
+# yaml so parse-sdt does not apply the board-overlay nodes.
+if [ ! -f "$MACHINE_YAML" ]; then
+  echo "ERROR: MACHINE_YAML not found at $MACHINE_YAML after repopull"
+  return 1
 fi
 
-# Generate versal2-vek385-sdt-full machine-conf
+# Generate versal-2ve-2vm-vek385-multidomain machine-conf using sdt output from hw build
 gen-machineconf parse-sdt \
-                --hw-description $CUR_DIR/sw/yocto/build/sdt_outdir \
-		-c $CUR_DIR/sw/yocto/sources/$VEK385_LAYER/conf/ \
-                --machine-name versal2-vek385-sdt-full \
-		--template $CUR_DIR/sw/yocto/sources/meta-amd-adaptive-socs/meta-amd-adaptive-socs-bsp/conf/machineyaml/versal-2ve-2vm-vek385-sdt-seg.yaml
+	--hw-description $SDT_OUTPUT \
+	--template $MACHINE_YAML
 
 # xilinx-bootbin: generate boot.bin for OSPI/JTAG
-if MACHINE=versal2-vek385-sdt-full bitbake xilinx-bootbin; then
+if MACHINE=versal-2ve-2vm-vek385-multidomain bitbake edf-ospi; then
   echo "Yocto generated boot.bin successfully"
 else
   echo "failed to generate boot.bin"

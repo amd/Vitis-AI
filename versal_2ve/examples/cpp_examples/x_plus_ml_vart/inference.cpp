@@ -34,6 +34,7 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 #include "inference.hpp"
 #include "x_plus_ml_app.hpp"  // For frame types and AppQueue
 
@@ -132,6 +133,28 @@ static string get_memory_layout_string(const vart::MemoryLayout& layout) {
 }
 
 /*
+ * Convert tensor type string ("CPU" or "HW") to vart::TensorType.
+ */
+static vart::TensorType tensor_type_from_string(const std::string& tensor_type) {
+  if (tensor_type == "CPU") return vart::TensorType::CPU;
+  if (tensor_type == "HW") return vart::TensorType::HW;
+  throw std::invalid_argument("Invalid tensor type '" + tensor_type + "': must be 'CPU' or 'HW'");
+}
+
+/*
+ * Build a tensor-name index for fast metadata lookup.
+ */
+static std::unordered_map<std::string, const vart::NpuTensorInfo*> build_tensor_index(
+    const std::vector<vart::NpuTensorInfo>& tensors_info) {
+  std::unordered_map<std::string, const vart::NpuTensorInfo*> index;
+  index.reserve(tensors_info.size());
+  for (const auto& info : tensors_info) {
+    index[info.name] = &info;
+  }
+  return index;
+}
+
+/*
  * Print tensor information
  */
 static void print_tensor_info(const std::vector<InferTensorInfo>& infos, AppLogLevel log_level) {
@@ -226,6 +249,7 @@ void dump_infer_input_to_file(const InferenceConfig* ctx,
       break;
 
     case VideoFormat::RGBP:
+    case VideoFormat::BGRP:
       // Planar RGB: 1 byte per pixel per plane, dump line by line to skip padding
       for (uint8_t plane = 0; plane < map_info->nplanes; ++plane) {
         for (int h = 0; h < map_info->height; ++h) {
@@ -236,6 +260,7 @@ void dump_infer_input_to_file(const InferenceConfig* ctx,
       break;
 
     case VideoFormat::RGBP_FLOAT:
+    case VideoFormat::BGRP_FLOAT:
       // Planar RGB float: 4 bytes per pixel per plane, dump line by line to skip padding
       for (uint8_t plane = 0; plane < map_info->nplanes; ++plane) {
         for (int h = 0; h < map_info->height; ++h) {
@@ -247,6 +272,8 @@ void dump_infer_input_to_file(const InferenceConfig* ctx,
 
     case VideoFormat::RGBP_BF16:
     case VideoFormat::RGBP_FP16:
+    case VideoFormat::BGRP_BF16:
+    case VideoFormat::BGRP_FP16:
       // Planar RGB half: 2 bytes per pixel per plane, dump line by line to skip padding
       for (uint8_t plane = 0; plane < map_info->nplanes; ++plane) {
         for (int h = 0; h < map_info->height; ++h) {
@@ -363,9 +390,7 @@ Inference::Inference(const InferenceConfig& config,
 
 // Destructor
 Inference::~Inference() {
-  if (is_running()) {
-    stop();
-  }
+  stop();
 
   // Log cache statistics before cleanup and clear cache
   if (config_.log_level >= AppLogLevel::INFO) {
@@ -426,20 +451,25 @@ bool Inference::start() {
 
 // Stop method
 void Inference::stop() {
-  if (!is_running()) {
-    APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] already stopped", inst_name_.c_str());
-    return;
+  if (is_running()) {
+    // Signal shutdown
+    APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] Stopping...", inst_name_.c_str());
+    state_ = ThreadState::SHUTTING_DOWN;
+    // Notify queues to wake up any waiting threads
+    input_queue_.finish();
+    output_queue_.finish();
+  } else if (worker_thread_ && worker_thread_->joinable()) {
+    // Worker left RUNNING on critical error; still wake threads blocked in pop()
+    input_queue_.finish();
+    output_queue_.finish();
   }
-
-  APP_LOG(AppLogLevel::INFO, config_.log_level, "[%s] Stopping...", inst_name_.c_str());
-
-  state_ = ThreadState::SHUTTING_DOWN;
+  // Always join: a worker that self-shut-down on critical error already left
+  // RUNNING, and destroying a joinable std::thread calls terminate().
   if (worker_thread_ && worker_thread_->joinable()) {
     worker_thread_->join();
+    APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] stopped", inst_name_.c_str());
   }
-
   state_ = ThreadState::IDLE;
-  APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] stopped", inst_name_.c_str());
 }
 
 // Get queue depths method - updated for AppQueue
@@ -478,9 +508,10 @@ void Inference::worker_thread_function() {
       // Move frames in - they are released when run_inference_on_frame returns (before dump)
       int frame_index = preprocessed_input.frame_index;
       int64_t iteration_number = preprocessed_input.iteration_number;
+      auto scale_info = std::move(preprocessed_input.scale_info);
       processing_frame_ = true;
-      bool success =
-          process_video_frame(std::move(preprocessed_input.preprocessed_frame), frame_index, iteration_number);
+      bool success = process_video_frame(std::move(preprocessed_input.preprocessed_frame), frame_index,
+                                         iteration_number, std::move(scale_info));
       preprocessed_input = {};  // Release any remaining references
       processing_frame_ = false;
 
@@ -512,7 +543,10 @@ void Inference::worker_thread_function() {
 }
 
 // Process video frame method - black box implementation
-bool Inference::process_video_frame(BatchedFrames&& input_frames, int frame_index, int64_t iteration_number) {
+bool Inference::process_video_frame(BatchedFrames&& input_frames,
+                                    int frame_index,
+                                    int64_t iteration_number,
+                                    std::vector<vart::InferResScaleInfo>&& scale_info) {
   if (input_frames.empty()) {
     APP_LOG(AppLogLevel::ERROR, config_.log_level, "Empty input frames batch");
     return false;
@@ -540,9 +574,13 @@ bool Inference::process_video_frame(BatchedFrames&& input_frames, int frame_inde
     output_frame.frame_index = frame_index;
     output_frame.iteration_number = iteration_number;
     output_frame.inference_output = std::move(inference_results);
+    output_frame.scale_info = std::move(scale_info);
 
     // Push results to output queue
     if (!output_queue_.push(output_frame)) {
+      if (state_.load() != ThreadState::RUNNING) {
+        return true;  // shutdown, not a failure
+      }
       APP_LOG(AppLogLevel::ERROR, config_.log_level, "Failed to push results to output queue");
       return false;
     }
@@ -715,6 +753,73 @@ BatchedTensors Inference::run_inference_on_frame(BatchedFrames input_frames,
   return all_output_tensors;
 }
 
+// Resolve effective tensor metadata for one direction, applying per-tensor type overrides.
+bool Inference::resolve_tensors_for_direction(
+    vart::TensorDirection direction, vart::TensorType global_type,
+    const std::unordered_map<std::string, std::string>& per_tensor_type_map,
+    std::vector<vart::NpuTensorInfo>& resolved_tensors_info) {
+  AppLogLevel log_level = config_.log_level;
+  const char* dir_name = direction == vart::TensorDirection::INPUT ? "input" : "output";
+
+  /* Fetch all available views so per-tensor selection can choose CPU/HW by name. */
+  const auto global_tensors_info = runner_->get_tensors_info(direction, global_type);
+  const auto cpu_tensors_info = runner_->get_tensors_info(direction, vart::TensorType::CPU);
+  const auto hw_tensors_info = runner_->get_tensors_info(direction, vart::TensorType::HW);
+
+  const auto cpu_tensors_index = build_tensor_index(cpu_tensors_info);
+  const auto hw_tensors_index = build_tensor_index(hw_tensors_info);
+
+  /* Build tensor names: global-view order first, then edge-only names. */
+  std::vector<std::string> tensor_names;
+  std::unordered_set<std::string> seen_names;
+  tensor_names.reserve(global_tensors_info.size() +
+                       (global_type == vart::TensorType::CPU ? hw_tensors_info.size() : cpu_tensors_info.size()));
+
+  for (const auto& info : global_tensors_info) {
+    tensor_names.push_back(info.name);
+    seen_names.insert(info.name);
+  }
+
+  /* Pick the opposite view so CPU-only/HW-only edge tensors are not dropped. */
+  const auto& edge_tensors_info = global_type == vart::TensorType::CPU ? hw_tensors_info : cpu_tensors_info;
+  for (const auto& info : edge_tensors_info) {
+    if (seen_names.find(info.name) == seen_names.end()) {
+      tensor_names.push_back(info.name);
+      seen_names.insert(info.name);
+    }
+  }
+
+  resolved_tensors_info.clear();
+  resolved_tensors_info.reserve(tensor_names.size());
+
+  /* Resolve each tensor name to an effective type: override if present, else global. */
+  for (const auto& tensor_name : tensor_names) {
+    vart::TensorType selected_type = global_type;
+    auto override_it = per_tensor_type_map.find(tensor_name);
+    if (override_it != per_tensor_type_map.end()) {
+      selected_type = tensor_type_from_string(override_it->second);
+    }
+
+    const auto& selected_index = selected_type == vart::TensorType::CPU ? cpu_tensors_index : hw_tensors_index;
+    auto selected_it = selected_index.find(tensor_name);
+
+    if (selected_it != selected_index.end()) {
+      resolved_tensors_info.push_back(*(selected_it->second));
+      if (selected_type != global_type) {
+        APP_LOG(AppLogLevel::INFO, log_level, "[%s] Applied per-tensor %s tensor type override: '%s' -> %s",
+                inst_name_.c_str(), dir_name, tensor_name.c_str(), vart::to_string(selected_type).data());
+      }
+    } else {
+      /* create_runner() validates overrides; missing view here is an internal error. */
+      APP_LOG(AppLogLevel::ERROR, log_level, "[%s] Unable to resolve %s tensor '%s' for type %s.",
+              inst_name_.c_str(), dir_name, tensor_name.c_str(), vart::to_string(selected_type).data());
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // Create inference runner method
 bool Inference::create_inference_runner() {
   try {
@@ -735,9 +840,17 @@ bool Inference::create_inference_runner() {
     return false;
   }
 
-  /* Get input and output tensors */
-  auto input_tensors_info = runner_->get_tensors_info(vart::TensorDirection::INPUT, config_.input_tensor_type);
-  auto output_tensors_info = runner_->get_tensors_info(vart::TensorDirection::OUTPUT, config_.output_tensor_type);
+  /* Get input and output tensors, resolving per-tensor type overrides where configured */
+  std::vector<vart::NpuTensorInfo> input_tensors_info;
+  std::vector<vart::NpuTensorInfo> output_tensors_info;
+  if (!resolve_tensors_for_direction(vart::TensorDirection::INPUT, config_.input_tensor_type,
+                                     config_.in_tensor_type_map, input_tensors_info)) {
+    return false;
+  }
+  if (!resolve_tensors_for_direction(vart::TensorDirection::OUTPUT, config_.output_tensor_type,
+                                     config_.out_tensor_type_map, output_tensors_info)) {
+    return false;
+  }
 
   if (!input_tensors_info.size() && !output_tensors_info.size()) {
     APP_LOG(AppLogLevel::ERROR, config_.log_level, "Couldn't get input and output tensors");
@@ -749,9 +862,24 @@ bool Inference::create_inference_runner() {
 
   /* Set model's information based on the tensors */
   /* Assumption we always has one input tensor and of size H*W*C */
-  config_.batch_size = runner_->get_batch_size();
+  config_.batch_size = runner_->get_batch_size(vart::TensorDirection::INPUT);
+  config_.output_batch_size = runner_->get_batch_size(vart::TensorDirection::OUTPUT);
+  APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] Input batch size: %u, Output batch size: %u",
+          inst_name_.c_str(), config_.batch_size, config_.output_batch_size);
   config_.num_in_tensors = runner_->get_num_input_tensors();
   config_.num_out_tensors = runner_->get_num_output_tensors();
+
+  if (input_tensors_info.size() != config_.num_in_tensors) {
+    APP_LOG(AppLogLevel::ERROR, config_.log_level, "[%s] Resolved input tensor count mismatch: resolved=%zu, expected=%zu",
+            inst_name_.c_str(), input_tensors_info.size(), config_.num_in_tensors);
+    return false;
+  }
+  if (output_tensors_info.size() != config_.num_out_tensors) {
+    APP_LOG(AppLogLevel::ERROR, config_.log_level,
+            "[%s] Resolved output tensor count mismatch: resolved=%zu, expected=%zu", inst_name_.c_str(),
+            output_tensors_info.size(), config_.num_out_tensors);
+    return false;
+  }
 
   // Resize tensor caches based on actual model requirements
   input_tensor_cache_.resize(config_.num_in_tensors);
@@ -827,9 +955,10 @@ bool Inference::create_inference_runner() {
   /* Log model and tensor information for debugging */
   {
     APP_LOG(AppLogLevel::DEBUG, config_.log_level,
-            "[%s] Batch size: %d, Num Input Tensors: %ld, "
+            "[%s] Input batch size: %d, Output batch size: %d, Num Input Tensors: %ld, "
             "Num Output Tensors: %ld",
-            inst_name_.c_str(), config_.batch_size, config_.num_in_tensors, config_.num_out_tensors);
+            inst_name_.c_str(), config_.batch_size, config_.output_batch_size, config_.num_in_tensors,
+            config_.num_out_tensors);
     APP_LOG(AppLogLevel::DEBUG, config_.log_level, "[%s] Model resolution: width x height: %dx%d", inst_name_.c_str(),
             config_.model_width, config_.model_height);
 
@@ -857,7 +986,7 @@ bool Inference::create_output_tensor_pools() {
     // Resize to number of output tensors
     output_pool_.resize(config_.num_out_tensors);
 
-    uint32_t pool_depth = config_.batch_size * INFERENCE_QUEUE_DEPTH;
+    uint32_t pool_depth = config_.output_batch_size * INFERENCE_QUEUE_DEPTH;
 
     for (unsigned int i = 0u; i < config_.num_out_tensors; ++i) {
       uint32_t buf_size = config_.out_tensors_info[i].meta.size_in_bytes;

@@ -74,6 +74,8 @@ wrote OFM 0 output (1, 1000) -> ./resnet50_int8_ofm_0.bin
 
 The **input / output** lines confirm tensor names, dtypes, and shapes. Here the OFM is **1000-way logits** (typical ImageNet head), written as **`./resnet50_int8_ofm_0.bin`** (float32 raw bytes).
 
+The feeder requires a **fixed** ONNX input shape. Dynamic axes (for example a symbolic batch dimension) are rejected by `_fixed_shape_tuple`; use a fixed-shape ONNX or a different feeder.
+
 ### `python3 run_ResNet50_vitisai.py --help`
 
 ```text

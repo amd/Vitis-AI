@@ -7,7 +7,6 @@
     "scale-g": 0.017507,
     "scale-b": 0.017429,
     "colour-format" : "RGBX",
-    "maintain-aspect-ratio" : true,
     "resizing-type" : "PANSCAN",
     "in-mem-bank" : 2,
     "out-mem-bank" : 2,

@@ -65,6 +65,11 @@ class VartZerocopyPipeline {
 
   TensorMode mode() const { return mode_; }
 
+  // Data Parallelism size (dp_size) reported by the runner - the number of HW instances the
+  // model runs on in parallel; equals pipeline_cfg::kBatchSize (enforced at runner-creation
+  // time). Defined out-of-line since vart::Runner is only forward-declared here.
+  size_t batch_size() const;
+
   bool read_and_decode(const std::string& image_path);
 
   // See buffer types & management comment block on allocate_buffers() in the .cpp.

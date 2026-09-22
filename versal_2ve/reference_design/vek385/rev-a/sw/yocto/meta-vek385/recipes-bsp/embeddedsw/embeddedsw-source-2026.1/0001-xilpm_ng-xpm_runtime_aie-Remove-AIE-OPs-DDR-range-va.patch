@@ -1,0 +1,98 @@
+From 726dcde43d760363055c7dc7be43cd0729cdc9a0 Mon Sep 17 00:00:00 2001
+From: Nicole Baze <amanda.baze@amd.com>
+Date: Wed, 19 Aug 2026 11:35:19 -0700
+Subject: [EMBEDDEDSW PATCH] xilpm_ng: xpm_runtime_aie: Remove AIE OPs DDR
+ range validation
+
+Commit e166800c56d8 ("xilpm_ng: aie: validate caller DDR source ranges")
+added XPm_IsMemAddressValid() before every Aie2ps_Operation() and
+Aie2ps_HandShake() PMC DMA. On the AIE ops path the Linux driver batches
+many per-column handshake operations in a single SMC call, and each op
+and handshake re-runs the full subsystem MemRegn plus device-table walk,
+which regresses AIE partition bring-up latency.
+
+The DDR-range ownership check is an opt-in security-hardening feature.
+Comment out both AIE validation call sites (leaving the code in place with
+an explanatory note) so the default build restores the previous
+performance; re-enable the commented blocks where the hardening is
+required.
+
+Signed-off-by: Nicole Baze <amanda.baze@amd.com>
+---
+ .../src/xilpm_runtime/src/xpm_runtime_aie.c   | 53 +++++++++++--------
+ 1 file changed, 31 insertions(+), 22 deletions(-)
+
+diff --git a/lib/sw_services/xilpm_ng/src/xilpm_runtime/src/xpm_runtime_aie.c b/lib/sw_services/xilpm_ng/src/xilpm_runtime/src/xpm_runtime_aie.c
+index 8be7afe863..357a47d88d 100644
+--- a/lib/sw_services/xilpm_ng/src/xilpm_runtime/src/xpm_runtime_aie.c
++++ b/lib/sw_services/xilpm_ng/src/xilpm_runtime/src/xpm_runtime_aie.c
+@@ -981,16 +981,22 @@ static XStatus Aie2ps_HandShake(u32 SubsystemId, u32 StartCol, u32 EndCol, const
+ 		goto done;
+ 	}
+ 
+-	/* Validate caller-supplied DDR source range against the requesting
+-	 * subsystem's allowed memory regions before pulling bytes into the
+-	 * per-column AIE UC Core Private Data Memory via PMC DMA. */
+-	Status = XPm_IsMemAddressValid(SubsystemId, DdrAddr, (u64)Len);
+-	if (XPM_SUCCESS != Status) {
+-		PmErr("AIE handshake DDR src 0x%x_%08x len %u not allowed for subsystem 0x%x (Status=0x%x)\r\n",
+-		      HighAddr, LowAddr, Len, SubsystemId, Status);
+-		DbgErr = XPM_INT_ERR_INVALID_PARAM;
+-		goto done;
+-	}
++	/*
++	 * Caller-supplied DDR source-range validation is intentionally disabled
++	 * here to avoid the per-handshake device-table walk that regresses AIE
++	 * partition bring-up. This is an opt-in security-hardening check;
++	 * re-enable the block below to enforce caller-DDR ownership before
++	 * pulling bytes into the per-column AIE UC Core Private Data Memory.
++	 *
++	 * Status = XPm_IsMemAddressValid(SubsystemId, DdrAddr, (u64)Len);
++	 * if (XPM_SUCCESS != Status) {
++	 *     PmErr("AIE handshake DDR src 0x%x_%08x len %u not allowed for subsystem 0x%x (Status=0x%x)\r\n",
++	 *           HighAddr, LowAddr, Len, SubsystemId, Status);
++	 *     DbgErr = XPM_INT_ERR_INVALID_PARAM;
++	 *     goto done;
++	 * }
++	 */
++	(void)SubsystemId;
+ 
+ 	for (Col = StartCol; Col <= EndCol; Col++) {
+ 		BaseAddress = AIE2PS_TILE_BADDR(NocAddress, Col, 0U);
+@@ -1115,18 +1121,21 @@ static XStatus Aie2ps_Operation(u32 SubsystemId, u32 Size, u32 HighAddr, u32 Low
+ 		goto done;
+ 	}
+ 
+-	/* Validate caller-supplied DDR source range against the requesting
+-	 * subsystem's allowed memory regions before copying the AIE op buffer
+-	 * into the local Buffer[] via PMC DMA. The helper rejects size==0,
+-	 * (Addr+Size) overflow, and addresses outside the subsystem's allowed
+-	 * MemRegn list, which subsumes the previous (0,0) null check. */
+-	Status = XPm_IsMemAddressValid(SubsystemId, DdrAddr, (u64)Size);
+-	if (XPM_SUCCESS != Status) {
+-		PmErr("AIE op buffer DDR src 0x%x_%08x size %u not allowed for subsystem 0x%x (Status=0x%x)\r\n",
+-		      HighAddr, LowAddr, Size, SubsystemId, Status);
+-		DbgErr = XPM_INT_ERR_INVALID_PARAM;
+-		goto done;
+-	}
++	/*
++	 * Caller-supplied DDR source-range validation is intentionally disabled
++	 * here to avoid the per-op device-table walk that regresses AIE partition
++	 * bring-up. This is an opt-in security-hardening check; re-enable the
++	 * block below to enforce caller-DDR ownership before copying the AIE op
++	 * buffer into the local Buffer[] via PMC DMA.
++	 *
++	 * Status = XPm_IsMemAddressValid(SubsystemId, DdrAddr, (u64)Size);
++	 * if (XPM_SUCCESS != Status) {
++	 *     PmErr("AIE op buffer DDR src 0x%x_%08x size %u not allowed for subsystem 0x%x (Status=0x%x)\r\n",
++	 *           HighAddr, LowAddr, Size, SubsystemId, Status);
++	 *     DbgErr = XPM_INT_ERR_INVALID_PARAM;
++	 *     goto done;
++	 * }
++	 */
+ 
+ 	/* Copy the buffer shared by Linux driver from DDR to RAM */
+         Status = XPlmi_DmaXfr(DdrAddr, DestAddr, Size/4U, XPLMI_PMCDMA_0);
+-- 
+2.25.1
+

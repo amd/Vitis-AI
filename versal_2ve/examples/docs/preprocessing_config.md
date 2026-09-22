@@ -32,9 +32,9 @@ Every `preprocess-config` accepts the following fields.
 | `mean-r` / `mean-g` / `mean-b`     | float   | Yes      | —                                        | Per-channel mean used for normalization (`y = (x - mean) * scale`)                                                                       |
 | `scale-r` / `scale-g` / `scale-b`  | float   | Yes      | —                                        | Per-channel scale used for normalization                                                                                                 |
 | `colour-format`                    | string  | No\*     | Auto-derived                             | Pre-processor output format (see [Selecting `colour-format`](#selecting-colour-format)). \*In `x_plus_ml_vart` this field is optional; when omitted the format is derived from the inference tensor's layout and data type assuming RGB colour space. Other apps require this field. |
-| `maintain-aspect-ratio`            | boolean | No       | `false`                                  | When `true`, scaling preserves aspect ratio; requires `resizing-type` to be set                                                          |
-| `resizing-type`                    | string  | Cond.    | —                                        | `LETTERBOX` (pad to fit, used by YOLOX-style models) or `PANSCAN` (crop to fit, used by ResNet-style models); required when `maintain-aspect-ratio` is `true` |
-| `symmetric-padding`                | boolean | No       | `false`                                  | `LETTERBOX` only; `true` splits padding equally across both sides of the image, `false` places all padding on one side                   |
+| `resizing-type`                    | string  | No       | `DEFAULT`                                | Image resizing strategy: `DEFAULT` (direct stretch), `LETTERBOX` (aspect-ratio preserving with centered symmetric padding), `PANSCAN` (center-crop then resize). See [Resizing Modes](#resizing-modes). |
+| `maintain-aspect-ratio`            | boolean | No       | `false`                                  | When `resizing-type` is `DEFAULT`, controls whether to preserve aspect ratio. Ignored for `LETTERBOX` and `PANSCAN`. |
+| `symmetric-padding`                | boolean | No       | `false`                                  | When `resizing-type` is `DEFAULT` and `maintain-aspect-ratio` is `true`, controls whether padding is split equally on both sides. Ignored for `LETTERBOX` and `PANSCAN`. |
 | `in-mem-bank`                      | integer | Yes      | —                                        | Input memory bank index accessible by the `image_processing` PL kernel; the kernel reads the raw input frame from this bank             |
 | `out-mem-bank`                     | integer | Yes      | —                                        | Output memory bank index accessible by the `image_processing` PL kernel; the kernel writes the pre-processed output to this bank        |
 | `quant-scale-factor`               | float   | No       | from model                               | Overrides the input-tensor quantization factor compiled into the model                                                                   |
@@ -136,17 +136,20 @@ Each application parses its own list of `colour-format` strings. The table below
 
 ---
 
-## Resizing
+## Resizing Modes
 
-`maintain-aspect-ratio` and `resizing-type` together control how the source frame is fitted to the model's input width and height.
+The `resizing-type` field selects the scaling policy applied during pre-processing. Combined with `maintain-aspect-ratio` and `symmetric-padding` (for DEFAULT only), it controls how the source frame is fitted to the model's input dimensions.
 
-| Configuration                                                       | Behaviour                                                                                                                                          |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maintain-aspect-ratio: false`                                      | Plain stretch to the model dimensions; aspect ratio is not preserved                                                                               |
-| `maintain-aspect-ratio: true` + `resizing-type: PANSCAN`            | Scales and centre-crops the source to the model dimensions, preserving aspect ratio at the cost of cropping content (e.g. ResNet-style classifiers)|
-| `maintain-aspect-ratio: true` + `resizing-type: LETTERBOX`          | Scales the source to fit inside the model dimensions and pads the remaining space, preserving the entire content (e.g. YOLOX-style detectors)      |
+| Mode | Description | Configuration |
+|------|-------------|----------------|
+| **DEFAULT** | Direct stretch-to-fit resize to output dimensions. Optionally use `maintain-aspect-ratio` and `symmetric-padding` flags to preserve aspect ratio with padding. | `"resizing-type": "DEFAULT"` |
+| **LETTERBOX** | Preserve aspect ratio with centered symmetric padding. Content is not cropped. | `"resizing-type": "LETTERBOX"` (do NOT include `maintain-aspect-ratio` or `symmetric-padding` fields) |
+| **PANSCAN** | Center-crop the source to match output aspect ratio, then resize without padding. Content may be cropped. | `"resizing-type": "PANSCAN"` (do NOT include `maintain-aspect-ratio` or `symmetric-padding` fields) |
 
-When `LETTERBOX` is selected, `symmetric-padding` controls whether the padding is split equally on both sides (`true`) or applied entirely on one side (`false`, the default).
+**Notes:**
+- For LETTERBOX, padding is always symmetric (centered).
+- `maintain-aspect-ratio` and `symmetric-padding` are only evaluated when `resizing-type` is DEFAULT; they are ignored for LETTERBOX and PANSCAN.
+- When using DEFAULT with `maintain-aspect-ratio: true` and `symmetric-padding: false`, padding is applied on one side only.
 
 ---
 
@@ -163,7 +166,6 @@ When `LETTERBOX` is selected, `symmetric-padding` controls whether the padding i
   "scale-g": 0.017507,
   "scale-b": 0.017429,
   "colour-format": "RGBP",
-  "maintain-aspect-ratio": true,
   "resizing-type": "PANSCAN",
   "in-mem-bank": 2,
   "out-mem-bank": 2
@@ -181,7 +183,6 @@ When `LETTERBOX` is selected, `symmetric-padding` controls whether the padding i
   "scale-g": 1.0,
   "scale-b": 1.0,
   "colour-format": "RGBX",
-  "maintain-aspect-ratio": true,
   "resizing-type": "LETTERBOX",
   "in-mem-bank": 2,
   "out-mem-bank": 2

@@ -1,10 +1,20 @@
-  &{/reserved-memory} {
-		
-		buffer@50000000000 {
-			reg = <0x500 0x00000000 0x01 0x00000000>;
-			compatible = "shared-dma-pool";
-			reusable;
-			linux,cma-default;
-		};
+&{/reserved-memory} {
 
-  };
+	/delete-node/ cma_reserved@800000000;
+	/delete-node/ cma_reserved@50000000000;
+	/delete-node/ cma_reserved@60000000000;
+
+	app_bank0: buffer@50000000000 {
+		reg = <0x500 0x00000000 0x02 0x00000000>;
+		compatible = "shared-dma-pool";
+		reusable;
+		linux,cma-default;
+	};
+
+};
+
+&{/__symbols__} {
+	/delete-property/ cma_reserved_800000000;
+	/delete-property/ cma_reserved_50000000000;
+	/delete-property/ cma_reserved_60000000000;
+};

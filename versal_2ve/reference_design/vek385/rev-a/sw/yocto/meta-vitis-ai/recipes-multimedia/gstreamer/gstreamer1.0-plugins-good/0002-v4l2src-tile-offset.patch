@@ -1,0 +1,388 @@
+Upstream-Status: Pending
+
+diff --git a/sys/v4l2/gstv4l2bufferpool.c b/sys/v4l2/gstv4l2bufferpool.c
+index 35d3678306..3988472a0e 100644
+--- a/sys/v4l2/gstv4l2bufferpool.c
++++ b/sys/v4l2/gstv4l2bufferpool.c
+@@ -58,6 +58,13 @@ GST_DEBUG_CATEGORY_STATIC (CAT_PERFORMANCE);
+
+ #define SYNC_IP_DEV_ENCODER "/dev/xlnxsync0"
+
++/* Vitis-AI-Telluride A2 xvip_dma capture destination offset control.
++ * Keep this local until the matching Xilinx UAPI header is available in the
++ * GStreamer build SDK. */
++#ifndef V4L2_CID_XILINX_TILE_OFFSET
++#define V4L2_CID_XILINX_TILE_OFFSET 0x0098ca22
++#endif
++
+ /*
+  * GstV4l2BufferPool:
+  */
+@@ -87,6 +94,7 @@ enum _GstV4l2BufferState
+
+ static void gst_v4l2_buffer_pool_complete_release_buffer (GstBufferPool * bpool,
+     GstBuffer * buffer, gboolean queued);
++static gboolean gst_v4l2_buffer_pool_vallocator_stop (GstV4l2BufferPool * pool);
+
+ static gboolean
+ gst_v4l2_is_buffer_valid (GstBuffer * buffer, GstV4l2MemoryGroup ** out_group)
+@@ -353,7 +361,10 @@ gst_v4l2_buffer_pool_import_dmabuf (GstV4l2BufferPool * pool,
+ {
+   GstV4l2MemoryGroup *group = NULL;
+   GstMemory *dma_mem[GST_VIDEO_MAX_PLANES] = { 0 };
++  GstVideoMeta *vmeta;
+   guint n_mem = gst_buffer_n_memory (src);
++  gsize memory_offset = 0;
++  gsize video_offset = 0;
+   gint i;
+
+   GST_LOG_OBJECT (pool, "importing dmabuf");
+@@ -361,12 +372,22 @@ gst_v4l2_buffer_pool_import_dmabuf (GstV4l2BufferPool * pool,
+   if (!gst_v4l2_is_buffer_valid (dest, &group))
+     goto not_our_buffer;
+
+-  if (n_mem > GST_VIDEO_MAX_PLANES)
++  if (n_mem == 0 || n_mem > GST_VIDEO_MAX_PLANES)
+     goto too_many_mems;
+
+   for (i = 0; i < n_mem; i++)
+     dma_mem[i] = gst_buffer_peek_memory (src, i);
+
++  if (pool->tile_offset_configured && pool->tile_offset != 0) {
++    gst_memory_get_sizes (dma_mem[0], &memory_offset, NULL);
++    vmeta = gst_buffer_get_video_meta (src);
++    if (!vmeta || vmeta->n_planes != 1)
++      goto invalid_tile_layout;
++    video_offset = vmeta->offset[0];
++    if (memory_offset != 0 || video_offset != pool->tile_offset)
++      goto inconsistent_tile_offset;
++  }
++
+   if (!gst_v4l2_allocator_import_dmabuf (pool->vallocator, group, n_mem,
+           dma_mem))
+     goto import_failed;
+@@ -394,6 +415,175 @@ import_failed:
+     GST_ERROR_OBJECT (pool, "failed to import dmabuf");
+     return GST_FLOW_ERROR;
+   }
++invalid_tile_layout:
++  {
++    GST_ERROR_OBJECT (pool,
++        "downstream buffer has no usable single-plane VideoMeta");
++    return GST_FLOW_ERROR;
++  }
++inconsistent_tile_offset:
++  {
++    GST_ERROR_OBJECT (pool,
++        "downstream tile layout changed: expected VideoMeta offset %"
++        G_GSIZE_FORMAT ", got memory offset %" G_GSIZE_FORMAT
++        " and VideoMeta offset %" G_GSIZE_FORMAT,
++        pool->tile_offset, memory_offset, video_offset);
++    return GST_FLOW_ERROR;
++  }
++}
++
++static gboolean
++gst_v4l2_buffer_pool_configure_tile_offset (GstV4l2BufferPool * pool,
++    GstBuffer * buffer)
++{
++  GstV4l2Object *obj = pool->obj;
++  struct v4l2_queryctrl query = { 0, };
++  struct v4l2_control control = { 0, };
++  GstVideoMeta *vmeta = NULL;
++  GstMemory *mem = NULL;
++  gsize memory_offset = 0;
++  gsize offset = 0;
++  const gchar *source = "full-frame layout";
++
++  pool->tile_offset_configured = FALSE;
++  pool->tile_control_available = FALSE;
++  pool->tile_offset = 0;
++
++  if (V4L2_TYPE_IS_OUTPUT (obj->type))
++    return TRUE;
++
++  if (obj->mode == GST_V4L2_IO_DMABUF_IMPORT && buffer) {
++    if (gst_buffer_n_memory (buffer) > 0) {
++      mem = gst_buffer_peek_memory (buffer, 0);
++      gst_memory_get_sizes (mem, &memory_offset, NULL);
++    }
++    vmeta = gst_buffer_get_video_meta (buffer);
++    if (vmeta && vmeta->n_planes > 0) {
++      offset = vmeta->offset[0];
++      source = "downstream VideoMeta";
++    }
++  }
++
++  query.id = V4L2_CID_XILINX_TILE_OFFSET;
++  if (obj->ioctl (pool->video_fd, VIDIOC_QUERYCTRL, &query) < 0) {
++    if (offset == 0) {
++      GST_DEBUG_OBJECT (pool,
++          "driver does not advertise the Xilinx tile destination offset "
++          "control");
++      return TRUE;
++    }
++    goto control_unavailable;
++  }
++  pool->tile_control_available = TRUE;
++
++  if ((query.flags & V4L2_CTRL_FLAG_DISABLED) && offset != 0)
++    goto control_disabled;
++  if (query.flags & V4L2_CTRL_FLAG_DISABLED)
++    return TRUE;
++
++  if (offset != 0) {
++    if (!buffer || gst_buffer_n_memory (buffer) != 1)
++      goto invalid_memory_count;
++    if (!vmeta || vmeta->n_planes != 1)
++      goto missing_video_meta;
++    if (memory_offset != 0)
++      goto nonzero_memory_offset;
++  }
++
++  if (offset > G_MAXINT32 || (gint64) offset < (gint64) query.minimum ||
++      (gint64) offset > (gint64) query.maximum)
++    goto offset_out_of_range;
++
++  control.id = V4L2_CID_XILINX_TILE_OFFSET;
++  control.value = (gint32) offset;
++  if (obj->ioctl (pool->video_fd, VIDIOC_S_CTRL, &control) < 0)
++    goto set_control_failed;
++
++  pool->tile_offset = offset;
++  pool->tile_offset_configured = TRUE;
++  GST_INFO_OBJECT (pool,
++      "set capture destination tile offset to %" G_GSIZE_FORMAT
++      " from %s", offset, source);
++
++  return TRUE;
++
++invalid_memory_count:
++  {
++    GST_ERROR_OBJECT (pool,
++        "automatic tile placement requires exactly one GstMemory");
++    return FALSE;
++  }
++missing_video_meta:
++  {
++    GST_ERROR_OBJECT (pool,
++        "automatic tile placement requires single-plane VideoMeta");
++    return FALSE;
++  }
++nonzero_memory_offset:
++  {
++    GST_ERROR_OBJECT (pool,
++        "VideoMeta tile layout requires GstMemory offset zero, got %"
++        G_GSIZE_FORMAT, memory_offset);
++    return FALSE;
++  }
++control_unavailable:
++  {
++    GST_ERROR_OBJECT (pool,
++        "driver has no tile destination control for nonzero offset %"
++        G_GSIZE_FORMAT, offset);
++    return FALSE;
++  }
++control_disabled:
++  {
++    GST_ERROR_OBJECT (pool,
++        "Xilinx tile destination offset control is disabled");
++    return FALSE;
++  }
++offset_out_of_range:
++  {
++    GST_ERROR_OBJECT (pool,
++        "tile offset %" G_GSIZE_FORMAT " is outside control range %d..%d",
++        offset, query.minimum, query.maximum);
++    return FALSE;
++  }
++set_control_failed:
++  {
++    GST_ERROR_OBJECT (pool,
++        "failed to set capture destination tile offset %" G_GSIZE_FORMAT
++        ": %s", offset, g_strerror (errno));
++    return FALSE;
++  }
++}
++
++static gboolean
++gst_v4l2_buffer_pool_reset_tile_offset (GstV4l2BufferPool * pool)
++{
++  struct v4l2_control control = { 0, };
++
++  if (!pool->tile_offset_configured) {
++    pool->tile_offset = 0;
++    return TRUE;
++  }
++
++  if (!pool->tile_control_available) {
++    pool->tile_offset_configured = FALSE;
++    pool->tile_offset = 0;
++    return TRUE;
++  }
++
++  control.id = V4L2_CID_XILINX_TILE_OFFSET;
++  control.value = 0;
++  if (pool->obj->ioctl (pool->video_fd, VIDIOC_S_CTRL, &control) < 0) {
++    GST_WARNING_OBJECT (pool,
++        "failed to reset capture destination tile offset: %s",
++        g_strerror (errno));
++    return FALSE;
++  }
++
++  GST_DEBUG_OBJECT (pool, "reset capture destination tile offset to zero");
++  pool->tile_offset_configured = FALSE;
++  pool->tile_offset = 0;
++  return TRUE;
+ }
+
+ static GstFlowReturn
+@@ -811,6 +1001,7 @@ gst_v4l2_buffer_pool_start (GstBufferPool * bpool)
+   GstV4l2Object *obj = pool->obj;
+   GstStructure *config;
+   GstCaps *caps;
++  GstBuffer *import_buffer = NULL;
+   guint size, min_buffers, max_buffers;
+   guint max_latency, min_latency, copy_threshold = 0;
+   gboolean can_allocate = FALSE, ret = TRUE;
+@@ -850,9 +1041,17 @@ gst_v4l2_buffer_pool_start (GstBufferPool * bpool)
+       gst_buffer_unref (buffer);
+       goto cannot_import;
+     }
+-    gst_buffer_unref (buffer);
++    import_buffer = buffer;
+   }
+
++  if (!gst_v4l2_buffer_pool_configure_tile_offset (pool, import_buffer)) {
++    if (import_buffer)
++      gst_buffer_unref (import_buffer);
++    goto cannot_configure_tile_offset;
++  }
++  if (import_buffer)
++    gst_buffer_unref (import_buffer);
++
+   config = gst_buffer_pool_get_config (bpool);
+   if (!gst_buffer_pool_config_get_params (config, &caps, &size, &min_buffers,
+           &max_buffers))
+@@ -987,6 +1186,8 @@ gst_v4l2_buffer_pool_start (GstBufferPool * bpool)
+         g_signal_connect_swapped (pool->vallocator, "group-released",
+         G_CALLBACK (gst_v4l2_buffer_pool_resurrect_buffer), pool);
+     ret = gst_v4l2_buffer_pool_streamon (pool);
++    if (!ret)
++      goto streamon_failed;
+   }
+
+   return ret;
+@@ -996,6 +1197,7 @@ wrong_config:
+   {
+     GST_ERROR_OBJECT (pool, "invalid config %" GST_PTR_FORMAT, config);
+     gst_structure_free (config);
++    gst_v4l2_buffer_pool_reset_tile_offset (pool);
+     return FALSE;
+   }
+ no_buffers:
+@@ -1004,11 +1206,15 @@ no_buffers:
+         "we received %d buffer from device '%s', we want at least %d",
+         min_buffers, obj->videodev, GST_V4L2_MIN_BUFFERS (obj));
+     gst_structure_free (config);
++    gst_v4l2_buffer_pool_vallocator_stop (pool);
++    gst_v4l2_buffer_pool_reset_tile_offset (pool);
+     return FALSE;
+   }
+ start_failed:
+   {
+     GST_ERROR_OBJECT (pool, "allocate failed");
++    gst_v4l2_buffer_pool_vallocator_stop (pool);
++    gst_v4l2_buffer_pool_reset_tile_offset (pool);
+     return FALSE;
+   }
+ other_pool_failed:
+@@ -1020,11 +1226,35 @@ other_pool_failed:
+ queue_failed:
+   {
+     GST_ERROR_OBJECT (pool, "failed to queue buffers into the capture queue");
++    gst_v4l2_buffer_pool_streamoff (pool);
++    gst_v4l2_buffer_pool_vallocator_stop (pool);
++    gst_v4l2_buffer_pool_reset_tile_offset (pool);
++    return FALSE;
++  }
++streamon_failed:
++  {
++    GST_ERROR_OBJECT (pool, "failed to start the capture queue");
++    if (pool->group_released_handler > 0) {
++      g_signal_handler_disconnect (pool->vallocator,
++          pool->group_released_handler);
++      pool->group_released_handler = 0;
++    }
++    gst_v4l2_buffer_pool_streamoff (pool);
++    gst_v4l2_buffer_pool_vallocator_stop (pool);
++    gst_v4l2_buffer_pool_reset_tile_offset (pool);
+     return FALSE;
+   }
+ cannot_import:
+   {
+     GST_ERROR_OBJECT (pool, "cannot import buffers from downstream pool");
++    gst_v4l2_buffer_pool_reset_tile_offset (pool);
++    return FALSE;
++  }
++cannot_configure_tile_offset:
++  {
++    GST_ERROR_OBJECT (pool,
++        "cannot configure capture destination from downstream buffer offset");
++    gst_v4l2_buffer_pool_reset_tile_offset (pool);
+     return FALSE;
+   }
+ xvfbsync_open_failed:
+@@ -1064,6 +1294,7 @@ static gboolean
+ gst_v4l2_buffer_pool_stop (GstBufferPool * bpool)
+ {
+   GstV4l2BufferPool *pool = GST_V4L2_BUFFER_POOL (bpool);
++  gboolean reset_ret;
+   gboolean ret;
+
+   GST_DEBUG_OBJECT (pool, "stopping pool");
+@@ -1088,7 +1319,9 @@ gst_v4l2_buffer_pool_stop (GstBufferPool * bpool)
+   if (ret)
+     ret = gst_v4l2_buffer_pool_vallocator_stop (pool);
+
+-  return ret;
++  reset_ret = gst_v4l2_buffer_pool_reset_tile_offset (pool);
++
++  return ret && reset_ret;
+ }
+
+ gboolean
+@@ -1125,6 +1358,9 @@ gst_v4l2_buffer_pool_orphan (GstV4l2Object * v4l2object)
+
+   GST_OBJECT_UNLOCK (pool);
+
++  if (ret)
++    gst_v4l2_buffer_pool_reset_tile_offset (pool);
++
+   if (ret) {
+     GstBufferPool *old_pool;
+     GST_OBJECT_LOCK (v4l2object->element);
+@@ -1832,6 +2068,8 @@ gst_v4l2_buffer_pool_finalize (GObject * object)
+ {
+   GstV4l2BufferPool *pool = GST_V4L2_BUFFER_POOL (object);
+
++  gst_v4l2_buffer_pool_reset_tile_offset (pool);
++
+   if (pool->video_fd >= 0)
+     pool->obj->close (pool->video_fd);
+
+diff --git a/sys/v4l2/gstv4l2bufferpool.h b/sys/v4l2/gstv4l2bufferpool.h
+index db8c554306..69da506f2d 100644
+--- a/sys/v4l2/gstv4l2bufferpool.h
++++ b/sys/v4l2/gstv4l2bufferpool.h
+@@ -80,6 +80,10 @@ struct _GstV4l2BufferPool
+   gboolean add_videometa;    /* set if video meta should be added */
+   gboolean enable_copy_threshold; /* If copy_threshold should be set */
+
++  gboolean tile_offset_configured;
++  gboolean tile_control_available;
++  gsize tile_offset;
++
+   guint min_latency;         /* number of buffers we will hold */
+   guint max_latency;         /* number of buffers we can hold */
+   guint num_queued;          /* number of buffers queued in the driver */

@@ -24,6 +24,12 @@
 #include "SimpleUtilityTimer.hpp"
 #include "x_plus_ml_app.hpp"
 
+#include <iomanip>
+#include <sstream>
+#include <vector>
+
+#include "common/app_utils.hpp"
+
 using namespace vart;
 
 /**
@@ -241,32 +247,33 @@ static bool parse_pipeline_json_config(AppContext* ctx, PipelineContext* pipelin
         return false;
       }
 
-      /* Get maintain_aspect_ratio value and perform corresponding resizing
-       * technique based on the resizing-type value provided */
-      bool maintain_aspect_ratio = pipeline_config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
-      if (maintain_aspect_ratio) {
-        if (!pipeline_config.get_child("preprocess-config").count("resizing-type")) {
-          APP_LOG(AppLogLevel::ERROR, log_level,
-                  "Please provide resizing-type to maintain-aspect-ratio. "
-                  "Valid values are LETTERBOX / PANSCAN");
-          return false;
-        }
+      /* Select preprocessing strategy based on resizing-type */
+      if (pipeline_config.get_child("preprocess-config").count("resizing-type")) {
         string resizing_type_str = pipeline_config.get<string>("preprocess-config.resizing-type");
         if (resizing_type_str.compare(0, 7, "PANSCAN") == 0) {
-          preprocess_info->preprocess_type = PreProcessType::DEFAULT;
-          pipeline->do_pan_scan = true;
+          preprocess_info->preprocess_type = PreProcessType::PANSCAN;
         } else if (resizing_type_str.compare(0, 9, "LETTERBOX") == 0) {
           preprocess_info->preprocess_type = PreProcessType::LETTERBOX;
-          preprocess_info->symmetric_padding = pipeline_config.get<bool>("preprocess-config.symmetric-padding", false);
+        } else if (resizing_type_str.compare(0, 7, "DEFAULT") == 0) {
+          preprocess_info->preprocess_type = PreProcessType::DEFAULT;
+          /* For DEFAULT type, read maintain-aspect-ratio and symmetric-padding from JSON if provided */
+          preprocess_info->maintain_aspect_ratio =
+              pipeline_config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
+          preprocess_info->symmetric_padding =
+              pipeline_config.get<bool>("preprocess-config.symmetric-padding", false);
         } else {
-          APP_LOG(AppLogLevel::ERROR, log_level, "Unknown resizing-type: %s. Valid values are LETTERBOX / PANSCAN",
+          APP_LOG(AppLogLevel::ERROR, log_level, "Unknown resizing-type: %s. Valid values are DEFAULT / LETTERBOX / PANSCAN",
                   resizing_type_str.c_str());
           return false;
         }
       } else {
-        /* Use default preprocess type if maintain-aspect-ratio is not provided
-         */
+        /* resizing-type not provided: use DEFAULT */
         preprocess_info->preprocess_type = PreProcessType::DEFAULT;
+        /* For DEFAULT type, read maintain-aspect-ratio and symmetric-padding from JSON if provided */
+        preprocess_info->maintain_aspect_ratio =
+            pipeline_config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
+        preprocess_info->symmetric_padding =
+            pipeline_config.get<bool>("preprocess-config.symmetric-padding", false);
       }
 
       /* Read the input and output memory bank indices for pre-processing module
@@ -384,12 +391,14 @@ static bool parse_pipeline_json_config(AppContext* ctx, PipelineContext* pipelin
       APP_LOG(AppLogLevel::DEBUG, log_level, "scale-b: %f", preprocess_info->scale_b);
 
       bool maintain_aspect_ratio =
-          (preprocess_info->preprocess_type == PreProcessType::LETTERBOX || pipeline->do_pan_scan);
+          (preprocess_info->preprocess_type == PreProcessType::LETTERBOX ||
+           preprocess_info->preprocess_type == PreProcessType::PANSCAN);
       APP_LOG(AppLogLevel::DEBUG, log_level, "maintain-aspect-ratio: %d", maintain_aspect_ratio);
 
       if (maintain_aspect_ratio) {
-        string resizing_type_str = pipeline->do_pan_scan ? "PANSCAN" : "LETTERBOX";
-        APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: %s", resizing_type_str.c_str());
+        const char* resizing_type_str =
+            preprocess_info->preprocess_type == PreProcessType::PANSCAN ? "PANSCAN" : "LETTERBOX";
+        APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: %s", resizing_type_str);
       }
 
       if (preprocess_info->preprocess_type == PreProcessType::LETTERBOX) {
@@ -550,19 +559,32 @@ static bool parse_json_config(AppContext* ctx) {
  * @param ctx Pointer to the application context.
  * @param pipeline Pointer to the pipeline context.
  * @param root_res Vector of shared pointers to the root inference results.
+ * @param frame_scale_info Per-frame preprocess geometry; when @c nullptr and preprocess
+ *        is enabled, falls back to @c pipeline->scale_info (last frame only).
  * @return true if transformation is successful, false otherwise.
  */
 bool transform_infer_result(AppContext* ctx,
                             PipelineContext* pipeline,
-                            vector<shared_ptr<vart::InferResult>>& root_res) {
+                            vector<shared_ptr<vart::InferResult>>& root_res,
+                            const vart::InferResScaleInfo* frame_scale_info = nullptr) {
   const vector<shared_ptr<vart::InferResult>>& result = (root_res.back())->get_children();
 
   AppLogLevel log_level = ctx->log_level;
   InferResScaleInfo info = {};
-  info.input_frame_width = pipeline->input_width;
-  info.input_frame_height = pipeline->input_height;
-  info.model_input_width = pipeline->model_info.model_width;
-  info.model_input_height = pipeline->model_info.model_height;
+  if (pipeline->preprocess_enable) {
+    if (frame_scale_info != nullptr) {
+      info = *frame_scale_info;
+    } else {
+      info = pipeline->scale_info;
+    }
+  } else {
+    /* No preprocess geometry — set only frame and model sizes. scale_x/y,
+     * crop_*, and pad_* stay zero so transform() uses uniform stretch scaling. */
+    info.input_frame_width = pipeline->input_width;
+    info.input_frame_height = pipeline->input_height;
+    info.model_input_width = pipeline->model_info.model_width;
+    info.model_input_height = pipeline->model_info.model_height;
+  }
 
   APP_LOG(AppLogLevel::INFO, log_level, "Results after transform:");
   for (auto& itr : result) {
@@ -839,10 +861,12 @@ int main(int argc, char* argv[]) {
      * on them and then dump the results into files. */
     vector<vector<shared_ptr<vart::VideoFrame>>> input_frames(ctx.num_active_pipelines);
     vector<vector<shared_ptr<vart::VideoFrame>>> preprocess_out_frames(ctx.num_active_pipelines);
+    vector<vector<vart::InferResScaleInfo>> batch_scale_info(ctx.num_active_pipelines);
 
     for (int i = 0; i < ctx.num_active_pipelines; ++i) {
       input_frames[i].clear();
       preprocess_out_frames[i].clear();
+      batch_scale_info[i].clear();
       inference_results[i].clear();
     }
 
@@ -883,6 +907,8 @@ int main(int argc, char* argv[]) {
       /* Allocate frame vectors for this pipeline */
       input_frames[pipeline_idx].resize(frames_to_read_per_pipeline[pipeline_idx]);
       preprocess_out_frames[pipeline_idx].resize(frames_to_read_per_pipeline[pipeline_idx]);
+      batch_scale_info[pipeline_idx].clear();
+      batch_scale_info[pipeline_idx].reserve(frames_to_read_per_pipeline[pipeline_idx]);
     }
 
     APP_LOG(AppLogLevel::DEBUG, log_level, "***** Start of new iteration *****");
@@ -955,6 +981,7 @@ int main(int argc, char* argv[]) {
               goto killall;
             }
             utiltimer::stop("main preprocess_process_frame pipeline_" + std::to_string(pipeline_idx));
+            batch_scale_info[pipeline_idx].push_back(ctx.pipelines[pipeline_idx].scale_info);
           }
 
 #ifdef DUMP_INPUTS
@@ -1075,8 +1102,12 @@ int main(int argc, char* argv[]) {
             APP_LOG(AppLogLevel::WARNING, log_level, "No infer result for current frame in pipeline %d", pipeline_idx);
           /* The predictions need to scaled/transformed to match the original
            * input before drawing */
+          const vart::InferResScaleInfo* frame_scale_info = nullptr;
+          if (ctx.pipelines[pipeline_idx].preprocess_enable && i < batch_scale_info[pipeline_idx].size()) {
+            frame_scale_info = &batch_scale_info[pipeline_idx][i];
+          }
           utiltimer::start("main transform_infer_result pipeline_" + std::to_string(pipeline_idx));
-          if (transform_infer_result(&ctx, &ctx.pipelines[pipeline_idx], root_res) != true) {
+          if (transform_infer_result(&ctx, &ctx.pipelines[pipeline_idx], root_res, frame_scale_info) != true) {
             APP_LOG(AppLogLevel::ERROR, log_level, "Failed to do transform for pipeline %d", pipeline_idx);
             for (uint32_t j = 0; j < frame_read_per_pipeline[pipeline_idx]; j++) {
               input_frames[pipeline_idx][j].reset();
@@ -1235,9 +1266,6 @@ killall:
   }
 
   cout << "Total number of samples processed on all pipelines: " << num_frame_processed << endl;
-  /* Sum of per-pipeline average frame latency (microseconds) for overall summary */
-  float overall_time = 0;
-  double sum_pipeline_fps = 0.0;
   uint32_t frames_processed_per_pipe = num_frame_processed / ctx.num_active_pipelines;
   cout << "Total number of samples processed on per pipeline: " << frames_processed_per_pipe << endl;
 
@@ -1251,63 +1279,46 @@ killall:
   }
 
   if (ctx.is_benchmark_enabled && frames_processed_per_pipe) {
-    cout << "----------------------------------------\n";
-    cout << "Performance metrics per pipeline:\n";
-
     uint32_t num_inference_runs = (frames_processed_per_pipe + ctx.pipelines[0].model_info.batch_size - 1) /
                                   ctx.pipelines[0].model_info.batch_size;  // Assuming same batch size for all pipelines
+    std::vector<std::vector<std::string>> perf_rows;
     for (int pipeline_idx = 0; pipeline_idx < ctx.num_active_pipelines; pipeline_idx++) {
-      cout << "Pipeline " << pipeline_idx << ":\n";
+      auto& pipe = ctx.pipelines[pipeline_idx];
+      const bool has_preprocess = pipe.preprocess_enable;
+      const bool has_postprocess = pipe.postprocess_enable;
+      const bool has_overlay = !pipe.out_file_path.empty();
 
-      if (ctx.pipelines[pipeline_idx].preprocess_enable) {
-        cout << "  Average time for Pre-process : "
-             << (ctx.pipelines[pipeline_idx].total_preprocess_time / 1000.0) / frames_processed_per_pipe << " ms\n";
-      }
-      cout << "  Average time for Inference : "
-           << (ctx.pipelines[pipeline_idx].total_infer_time / 1000.0) / num_inference_runs << " ms\n";
-      if (ctx.pipelines[pipeline_idx].postprocess_enable) {
-        cout << "  Average time for Post-process : "
-             << (ctx.pipelines[pipeline_idx].total_postprocess_time / 1000.0) / frames_processed_per_pipe << " ms\n";
-      }
-      if (!ctx.pipelines[pipeline_idx].out_file_path.empty()) {
-        cout << "  Average time for Overlay : "
-             << (ctx.pipelines[pipeline_idx].total_overlay_time / 1000.0) / frames_processed_per_pipe << " ms\n";
-      }
+      const double pre_ms = (pipe.total_preprocess_time / 1000.0) / frames_processed_per_pipe;
+      const double inf_ms = (pipe.total_infer_time / 1000.0) / num_inference_runs;  // ms/inference
+      const double post_ms = (pipe.total_postprocess_time / 1000.0) / frames_processed_per_pipe;
+      const double overlay_ms = (pipe.total_overlay_time / 1000.0) / frames_processed_per_pipe;
 
-      /* Amortize inference over output frames so totals/FPS are per frame when batch_size > 1.
-       * (Inference line above stays ms/batch via num_inference_runs.) */
-      ctx.pipelines[pipeline_idx].total_time =
-          ctx.pipelines[pipeline_idx].total_preprocess_time / frames_processed_per_pipe +
-          ctx.pipelines[pipeline_idx].total_infer_time / frames_processed_per_pipe +
-          ctx.pipelines[pipeline_idx].total_postprocess_time / frames_processed_per_pipe +
-          ctx.pipelines[pipeline_idx].total_overlay_time / frames_processed_per_pipe;
+      /* Pipeline time is measured per frame (inference time is split across all frames, then added
+       * to the other per-frame stages). Throughput = 1000 / pipeline time, so it is in frames/sec.
+       * The Inference row shows time per inference call (one Session::Run(), whose batch size is
+       * not necessarily the compiled model's Data Parallelism size, dp_size - the number of HW
+       * instances the model runs on in parallel - since the VitisAI EP may internally loop over
+       * multiple dp_size-wide parallel executions per call), so the two only match when that
+       * batch is 1. */
+      const double inf_ms_per_frame = (pipe.total_infer_time / 1000.0) / frames_processed_per_pipe;
+      double pipeline_ms = inf_ms_per_frame;
+      if (has_preprocess) pipeline_ms += pre_ms;
+      if (has_postprocess) pipeline_ms += post_ms;
+      if (has_overlay) pipeline_ms += overlay_ms;
+      const double pipeline_fps = (pipeline_ms > 0.0) ? (1000.0 / pipeline_ms) : 0.0;
 
-      const double pipeline_fps = 1000000.0 / static_cast<double>(ctx.pipelines[pipeline_idx].total_time);
-      sum_pipeline_fps += pipeline_fps;
-
-      cout << "  Average  total time for Pipeline " << pipeline_idx << ": "
-           << (ctx.pipelines[pipeline_idx].total_time / 1000.0) << " ms\n";
-      cout << "  Average  FPS for Pipeline " << pipeline_idx << ": " << pipeline_fps << " fps\n";
-      overall_time = overall_time + ctx.pipelines[pipeline_idx].total_time;
+      const std::string label = "Pipeline " + std::to_string(pipeline_idx + 1);
+      perf_rows.push_back({label, "PreProcess", has_preprocess ? (fmt2(pre_ms) + " ms/frame") : "-", "-"});
+      perf_rows.push_back({"", "Inference", fmt_ms_per_inference(inf_ms), "-"});
+      perf_rows.push_back({"", "PostProcess", has_postprocess ? (fmt2(post_ms) + " ms/frame") : "-", "-"});
+      perf_rows.push_back({"", "Overlay", has_overlay ? (fmt2(overlay_ms) + " ms/frame") : "-", "-"});
+      perf_rows.push_back({"", "Pipeline", fmt2(pipeline_ms) + " ms/frame", fmt2(pipeline_fps)});
     }
+    print_perf_table({"Pipelines", "Category", "Time", "Throughput (FPS)"}, perf_rows);
+    cout << "All values are averages over the run. Throughput (FPS) is reported for the Pipeline only.\n"
+         << "Pipeline Throughput (FPS) = 1000 / Pipeline time (ms per frame)." << endl;
   }
-  if (ctx.is_benchmark_enabled) {
-    cout << "==========================================================" << endl;
-    if (frames_processed_per_pipe != 0 && overall_time != 0) {
-      const double avg_latency_ms = (overall_time / 1000.0) / static_cast<double>(ctx.num_active_pipelines);
-      cout << "Average overall time for all the pipelines "
-           << ": " << avg_latency_ms << " ms\n";
-      cout << "Average  Overal FPS for all the pipelines "
-           << ": " << sum_pipeline_fps << " fps\n";
-    } else {
-      if (frames_processed_per_pipe == 0) {
-        cout << "Warning: frames_processed_per_pipe is zero. Skipping calculations.\n";
-      }
-      if (overall_time == 0) {
-        cout << "Warning: overall_time is zero. Skipping calculations.\n";
-      }
-    }
-  }
+
   if (ctx.log_level < AppLogLevel::RESULT)
     cout << "To view results on console, enable logs using the option "
             "--log-level "

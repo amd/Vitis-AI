@@ -15,7 +15,7 @@ This tutorial shows how to compile an ONNX model with the Vitis AI flow and depl
 
 To build the example and deploy it on board, the following software and hardware are required:
 
-* Vitis AI 6.2 Docker for Versal AI Edge Series Gen 2:
+* Vitis AI 6.3 Docker for Versal AI Edge Series Gen 2:
     * Instructions for installation and startup are in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
 * VEK385 evaluation kit:
     * Setup instructions are available in the Vitis AI User Guide for Versal AI Edge Series Gen 2.
@@ -52,8 +52,6 @@ python3 -m pip install -r requirements.txt
 python3 export_to_onnx.py 
 ```
 
-**Note**: Inside the docker, `python3` or `/usr/bin/python` should be explicitly used to execute the python scripts.
-
 The output model is saved to `models/resnet18.a1_in1k.onnx`:
 
 ```
@@ -76,7 +74,6 @@ INFO: [VAIP-VAIML-PASS] No. of Operators :
 INFO:  VAIML     49
 INFO: [VAIP-VAIML-PASS] No. of Subgraphs :
 INFO:    NPU     1
-INFO: [VAIP-VAIML-PASS] For detailed compilation results, please refer to my_cache_dir/resnet18.a1_in1k/final-vaiml-pass-summary.txt
 ```
 
 The number of operators accelerated on the NPU is displayed. 
@@ -86,12 +83,23 @@ To get more details about compilation results you can display the content of the
 ```
 --------- Final Summary of VAIML Pass ----------
 OS: Linux X64
-VAIP commit: ......
-Model: ....../models/resnet18.a1_in1k.onnx
+Model: ....../resnet18.a1_in1k.onnx
 Model signature: 41d764d4ef1d716a260bc7b2b4e07ff1
-Device: ve2
-Model data type: float32
-Device data type: bfloat16
+
+Compiler Information
+  Target Device: ve2 (part number: xc2ve3858)
+  Device Data Type: bfloat16
+  Flow: default
+  Version: VAIP ......
+  FlexML Version: rai_*_* (hash: ......, built: 2026-**-**-05:35:08)
+  Overlay: aie2_6x4x4.yaml
+  NPU Frequency: 1267 MHz
+  AIE Single Core Compiler: peano
+  Recipes: mlopslib
+  DP size: 1
+  TP size: 1
+  Preemption: disabled
+  Model data type: float32
 Number of operators in the model: 49
 GOPs of the model: 3.64388
 Number of operators supported by VAIML: 49 (100.000%)
@@ -100,21 +108,30 @@ Number of subgraphs supported by VAIML: 1
 Number of operators offloaded by VAIML: 49 (100.000%)
 GOPs offloaded by VAIML: 3.644 (100.000%)
 Number of subgraphs offloaded by VAIML: 1
+Number of partitions offloaded to NPU: 1
+Number of partitions executed on CPU: 0
 Number of subgraphs with compilation errors (fall back to CPU): 0
 Number of subgraphs below 20% GOPs threshold (fall back to CPU): 0
 Number of subgraphs above max number of subgraphs allowed(7): 0 (fall back to CPU)
 Stats for offloaded subgraphs
-Subgraph vaiml_par_0 stats:
+Subgraph vaiml_par_0 stats: 
     Type: npu
     Operators: 49 (100.000%)
     GOPs : 3.644 (100.000%)  OPs: 3,643,881,552
-    fp32 ops %: 99.731
+    bf16 ops %: 99.731
+
+Compilation Information
+  Frontend (FE): 17.5 s (6.2%)
+  Backend (BE): 261.9 s (93.2%)
+    AIE Compile: 74.4 s (26.5%)
+  Overhead (partitioner, cache, etc.): 1.6 s (0.6%)
+  Total: 281.0 s
 ```
 
 3. Refer to Vitis AI User Guide for Versal AI Edge Series Gen 2, boot up the AIE-ML_v2 board, and setup environment:
 
 ```
-export LD_LIBRARY_PATH=/usr/lib/python3.12/site-packages/voe/lib:/usr/lib/python3.12/site-packages/flexmlrt/lib:/usr/lib/python3.12/site-packages/onnxruntime/capi
+export LD_LIBRARY_PATH=/usr/lib/python3.12/site-packages/flexmlrt/lib/:/usr/lib/python3.12/site-packages/voe/lib/:/usr/lib/python3.12/site-packages/onnxruntime/capi:/usr/lib/python3.12/site-packages/vart_ml/lib:/usr/lib/python3.12/site-packages/vart_x/lib
 ```
 
 4. Run the inference on the board. The working directory can be mounted on the board or copied to the board by scp:

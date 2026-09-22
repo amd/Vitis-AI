@@ -80,7 +80,7 @@ static void print_ifm_node_maps_with_metadata(const utils::Options& opt,
   };
 
   write_line("\nIFM Node Metadata for All Models\n");
-  write_line("Use this table to update ifm_node_file_map in your JSON config.\n");
+  write_line("Use this table to update ifm-node-file-map in your JSON config.\n");
   write_line("Ensure IFM node names in the config match the model input node names.\n");
 
   for (size_t i = 0; i < models.size(); ++i) {
@@ -222,13 +222,20 @@ static int init_and_validate_models(const utils::Options& opt,
     std::string model_name = "Model_" + std::to_string(i + 1);
 
     log_info("\n========== ", model_name, " ==========");
-    log_info("  model_cache_path      : ", cfg.model_cache_path);
+    log_info("  model-cache-path      : ", cfg.model_cache_path);
     if (cfg.is_start_column_provided)
-      log_info("  start_column          : ", cfg.start_column);
+      log_info("  start-column          : ", cfg.start_column);
     if (cfg.is_columns_sharing_provided)
-      log_info("  aie_columns_sharing   : ", (cfg.aie_columns_sharing ? "shared" : "exclusive"));
+      log_info("  aie-columns-sharing   : ", (cfg.aie_columns_sharing ? "shared" : "exclusive"));
+    log_info("  input-tensor-type     : ", cfg.input_tensor_type);
+    log_info("  output-tensor-type    : ", cfg.output_tensor_type);
 
-    auto model = std::make_unique<VartMultimodelSeq>(model_name, cfg.model_cache_path);
+    // A CPU subgraph at a boundary requires the "CPU" tensor view for that
+    // direction; "HW" (the default) would make runner creation fail.
+    vart::TensorType in_type = (cfg.input_tensor_type == "CPU") ? vart::TensorType::CPU : vart::TensorType::HW;
+    vart::TensorType out_type = (cfg.output_tensor_type == "CPU") ? vart::TensorType::CPU : vart::TensorType::HW;
+
+    auto model = std::make_unique<VartMultimodelSeq>(model_name, cfg.model_cache_path, in_type, out_type);
 
     if (!model->initialize(cfg)) {
       std::cerr << "[ERROR] " << model_name << " initialization failed.\n";
@@ -436,7 +443,11 @@ int main(int argc, char* argv[]) {
     // ---- Final output tables ----
     utils::print_execution_summary(opt, models, random_io);
     if (benchmark) {
-      utils::print_performance_summary(opt, iterations, avg_ms);
+      std::vector<size_t> batch_sizes(models.size(), 1);
+      for (size_t i = 0; i < models.size(); ++i) {
+        batch_sizes[i] = models[i]->get_batch_size();
+      }
+      utils::print_performance_summary(opt, iterations, avg_ms, batch_sizes);
     }
 
   } catch (const std::exception& e) {

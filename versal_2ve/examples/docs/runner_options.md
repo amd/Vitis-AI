@@ -28,10 +28,12 @@ All fields are optional. Omitted fields fall back to each app's default (listed 
 | `log-level`             | string  | see notes      | `vart::Runner` log verbosity. Accepted: `ERROR`, `WARNING`, `INFO`, `DEBUG`. App defaults: `ml_vart` → `WARNING`, `x_plus_ml_vart` → `ERROR`. |
 | `aie-columns-sharing`   | boolean | backend default | NPU column scheduling: `true` = shared (temporal multi-tenancy), `false` = exclusive (spatial multi-tenancy). See note below.           |
 | `start-column`          | integer | backend default | Starting NPU column for the overlay's placement. When omitted, `vart::Runner` picks the first free column. See note below.              |
-| `cma-index`             | integer | `0`            | CMA index used to allocate `vart::Runner` buffer objects. **Parsed by `ml_vart` only**; ignored if added to an `x_plus_ml_vart` config.  |
+| `cma-index`             | unsigned integer | `0`   | CMA index used to allocate `vart::Runner` buffer objects. Negative values are not accepted. **Parsed by `ml_vart` only**; ignored if added to an `x_plus_ml_vart` config.  |
 | `input-tensor-type`     | string  | `HW`           | Whether input tensors are prepared in CPU format or NPU-accepted HW format. Accepted: `CPU`, `HW`. Invalid values fall back to `HW` with a warning. |
 | `output-tensor-type`    | string  | `HW`           | Whether output tensors are prepared in CPU format or NPU-accepted HW format. Accepted: `CPU`, `HW`. Invalid values fall back to `HW` with a warning. |
 | `ai-analyzer-profiling` | boolean | `false`        | Enables AI Analyzer profiling capture for this `vart::Runner` instance.                                                                  |
+| `enable-xrt-run-pool`   | boolean | `false`        | Enable XRT run pool for inference execution. When `true`, the runner pools XRT run objects and reuses them across `execute()` calls for improved throughput. This optimization requires the application to pool input and output tensors and pass the same IFM/OFM buffer pairs to each `execute()` call; allocating fresh tensors per call provides no benefit. **Parsed by `x_plus_ml_vart` only**; ignored if added to an `ml_vart` config. |
+| `name`                  | string  | `VAIML-Runner` | Name of the `vart::Runner` instance. Useful for logging and profiling.                                                                   |
 
 > **NPU column placement.** `aie-columns-sharing` and `start-column` together control how each model is laid out across the NPU's AI Engine columns. For the underlying concepts (data vs. tensor parallelism, spatial vs. temporal multi-tenancy, column math per device) see **[multi_tenancy.md](multi_tenancy.md)**. For the default-placement behaviour when `start-column` is omitted, see **[auto_placement_policy.md](auto_placement_policy.md)**.
 
@@ -50,7 +52,8 @@ All fields are optional. Omitted fields fall back to each app's default (listed 
     "start-column": 0,
     "input-tensor-type": "HW",
     "output-tensor-type": "HW",
-    "ai-analyzer-profiling": false
+    "ai-analyzer-profiling": false,
+    "enable-xrt-run-pool" : false
   }
 }
 ```

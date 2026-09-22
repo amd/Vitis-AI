@@ -31,7 +31,7 @@ The x_plus_ml_ort application uses a hierarchical JSON configuration structure:
   "device-index": 1,
   "models-config": [
     {
-      "config-path": "/etc/vai/x_plus_ml_ort/json_configs/resnet50.json"
+      "config-path": "/etc/vai/x_plus_ml_ort/json_configs/resnet50_int8.json"
     }
   ]
 }
@@ -45,7 +45,7 @@ To configure multiple models, add an entry per model under `models-config`. See 
   "device-index": 1,
   "models-config": [
     {
-      "config-path": "/etc/vai/x_plus_ml_ort/json_configs/resnet50.json"
+      "config-path": "/etc/vai/x_plus_ml_ort/json_configs/resnet50_int8.json"
     },
     {
       "config-path": "/etc/vai/x_plus_ml_ort/json_configs/yolox_m_int8_nms.json"
@@ -64,7 +64,7 @@ To configure multiple models, add an entry per model under `models-config`. See 
 
 | Field       | Type   | Description                               | Example Value   |
 | ----------- | ------ | ----------------------------------------- | --------------- |
-| config-path | String | Path to individual model config JSON file | "resnet50.json" |
+| config-path | String | Path to individual model config JSON file | "resnet50_int8.json" |
 
 ### Individual Model Configuration Files
 
@@ -101,10 +101,10 @@ This JSON configuration contains the following sections:
       }
     ],
     "execution-provider-options": {
-      "config_file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
+      "config-file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
       "target": "VAIML",
-      "cache_dir": "/etc/vai/models",
-      "cache_key": "resnet50_int8"
+      "cache-dir": "/etc/vai/models",
+      "cache-key": "resnet50_int8"
     }
   },
   "postprocess-config": {
@@ -157,13 +157,27 @@ See [preprocessing_config.md](../../../docs/preprocessing_config.md) for the ful
 
 | Field                     | Type    | Description                                                             | Example                                             |
 | ------------------------- | ------- | ----------------------------------------------------------------------- | --------------------------------------------------- |
-| config_file               | string  | Path to execution provider config file                                  | "/etc/vai/models/resnet50_int8/vitisai_config.json" |
+| config-file               | string  | Path to execution provider config file                                  | "/etc/vai/models/resnet50_int8/vitisai_config.json" |
 | target                    | string  | Target hardware platform for VitisAI execution provider                 | "VAIML"                                             |
-| cache_dir                 | string  | The path and name of the cache directory                                | "/etc/vai/models"                                   |
-| cache_key                 | string  | The subfolder in the cache directory where the compiled model is stored | "resnet50_int8"                                     |
-| encryption_key            | string  | (Optional) Encryption key for encrypted models                          | "my_encryption_key"                                 |
-| ai_analyzer_visualization | boolean | (Optional) Enable AI analyzer visualization                             | true                                                |
-| ai_analyzer_profiling     | boolean | (Optional) Enable AI analyzer profiling                                 | false                                               |
+| cache-dir                 | string  | The path and name of the cache directory                                | "/etc/vai/models"                                   |
+| cache-key                 | string  | The subfolder in the cache directory where the compiled model is stored | "resnet50_int8"                                     |
+| encryption-key            | string  | (Optional) Encryption key for encrypted models                          | "my_encryption_key"                                 |
+| ai-analyzer-visualization | boolean | (Optional) Enable AI analyzer visualization                             | true                                                |
+| ai-analyzer-profiling     | boolean | (Optional) Enable AI analyzer profiling                                 | false                                               |
+
+Example with the optional fields set:
+
+```json
+"execution-provider-options": {
+  "config-file": "/etc/vai/models/resnet50_int8/vitisai_config.json",
+  "target": "VAIML",
+  "cache-dir": "/etc/vai/models",
+  "cache-key": "resnet50_int8",
+  "encryption-key": "my_encryption_key",
+  "ai-analyzer-visualization": true,
+  "ai-analyzer-profiling": false
+}
+```
 
 ---
 

@@ -33,6 +33,7 @@
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <unordered_set>
 #include <vector>
 #include "common/app_utils.hpp"   //Contains utility functions for the app
@@ -200,27 +201,50 @@ int main(int argc, char* argv[]) {
     /* Get model path */
     model_path = model_cfg_pt.get<std::string>("model-file");
 
-    /* Parse Execution Provider options from user config */
+    /* Parse Execution Provider options from user config.
+     * Hyphenated key schema (e.g. "config-file") is recommended; the underscore
+     * schema (e.g. "config_file") is maintained for backward compatibility. */
     std::unordered_map<std::string, std::string> options;
 
     /* Vitis AI EP config file */
-    options["config_file"] = model_cfg_pt.get<std::string>("execution-provider-options.config_file");
+    auto config_file_node = model_cfg_pt.get_optional<std::string>("execution-provider-options.config-file");
+    if (!config_file_node) {
+      config_file_node = model_cfg_pt.get_optional<std::string>("execution-provider-options.config_file");
+    }
+    if (!config_file_node) {
+      throw std::runtime_error("Missing required field: execution-provider-options.config-file");
+    }
+    options["config_file"] = *config_file_node;
 
     /* Target device */
     options["target"] = model_cfg_pt.get<std::string>("execution-provider-options.target");
 
     /* Cache dir that was used to compile the model */
-    options["cache_dir"] = model_cfg_pt.get<std::string>(
-        "execution-provider-options.cache_"
-        "dir");
+    auto cache_dir_node = model_cfg_pt.get_optional<std::string>("execution-provider-options.cache-dir");
+    if (!cache_dir_node) {
+      cache_dir_node = model_cfg_pt.get_optional<std::string>("execution-provider-options.cache_dir");
+    }
+    if (!cache_dir_node) {
+      throw std::runtime_error("Missing required field: execution-provider-options.cache-dir");
+    }
+    options["cache_dir"] = *cache_dir_node;
 
     /* Cache key that was used to compile the model */
-    options["cache_key"] = model_cfg_pt.get<std::string>(
-        "execution-provider-options.cache_"
-        "key");
+    auto cache_key_node = model_cfg_pt.get_optional<std::string>("execution-provider-options.cache-key");
+    if (!cache_key_node) {
+      cache_key_node = model_cfg_pt.get_optional<std::string>("execution-provider-options.cache_key");
+    }
+    if (!cache_key_node) {
+      throw std::runtime_error("Missing required field: execution-provider-options.cache-key");
+    }
+    options["cache_key"] = *cache_key_node;
 
     /* Parse and set optional options if any */
     std::vector<std::pair<std::string, std::string>> option_keys = {
+        {"encryption_key", "execution-provider-options.encryption-key"},
+        {"ai_analyzer_visualization", "execution-provider-options.ai-analyzer-visualization"},
+        {"ai_analyzer_profiling", "execution-provider-options.ai-analyzer-profiling"}};
+    std::vector<std::pair<std::string, std::string>> legacy_option_keys = {
         {"encryption_key", "execution-provider-options.encryption_key"},
         {"ai_analyzer_visualization", "execution-provider-options.ai_analyzer_visualization"},
         {"ai_analyzer_profiling", "execution-provider-options.ai_analyzer_profiling"}};
@@ -228,6 +252,15 @@ int main(int argc, char* argv[]) {
     for (const auto& [option_name, config_key] : option_keys) {
       if (auto opt_value = model_cfg_pt.get_optional<std::string>(config_key)) {
         options[option_name] = *opt_value;
+      }
+    }
+    // Backward-compatibility pass: only fills in options not already set above,
+    // so the legacy underscored key never overrides a hyphenated one.
+    for (const auto& [option_name, config_key] : legacy_option_keys) {
+      if (options.find(option_name) == options.end()) {
+        if (auto opt_value = model_cfg_pt.get_optional<std::string>(config_key)) {
+          options[option_name] = *opt_value;
+        }
       }
     }
 
@@ -360,7 +393,7 @@ int main(int argc, char* argv[]) {
       /* Only read VitisAI config if model has dynamic batch size */
       int64_t device_batch_size = 1;  // Default for non-dynamic case
       if (model_batch_size <= 0) {
-        // Read hardware batch size (dp_size/device_batch_size) only when needed
+        // Read the Data Parallelism size (dp_size, falling back to device_batch_size) only when needed
         std::string vitisai_config_file = options["config_file"];
         device_batch_size = read_device_batch_size_from_config(vitisai_config_file);
         model_batch_size = device_batch_size;
@@ -667,10 +700,6 @@ int main(int argc, char* argv[]) {
           }
           size_t tensor_size = current_batch_size * input_element_size;
 
-          std::cout << "Batch iteration " << batch_iter << ": input_idx=" << input_idx << " processing "
-                    << current_batch_size << " images, offset=" << offset << ", tensor_size=" << tensor_size
-                    << std::endl;
-
           /* Create tensor for this batch based on data type */
           Ort::MemoryInfo mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
           ONNXTensorElementDataType dtype = input_data_types[input_idx];
@@ -906,11 +935,16 @@ int main(int argc, char* argv[]) {
       int32_t total_iterations = static_cast<int32_t>(n_runs) * num_iterations;
       double avg_time_us = total_inference_time_us / static_cast<double>(total_iterations);
 
-      /* convert micro to milli seconds */
+      /* convert micro to milli seconds; one session.Run() call processes one batch, whose size
+       * (model_batch_size) is not necessarily the compiled model's Data Parallelism size (dp_size -
+       * the number of HW instances the model runs on in parallel) - the VitisAI EP may internally
+       * loop over multiple dp_size-wide parallel executions per Session::Run() call, so the
+       * reported time is intentionally left unannotated with a dp_size. */
       double avg_time_ms = avg_time_us / 1000;
-      std::ostringstream time_str;
-      time_str << std::fixed << std::setprecision(2) << avg_time_ms;
-      std::cout << "Average inference time over " << n_runs << " runs: " << time_str.str() << " ms" << std::endl;
+      double throughput_fps =
+          (avg_time_ms > 0.0) ? (static_cast<double>(model_batch_size) * 1000.0 / avg_time_ms) : 0.0;
+      print_perf_table({{"Average Inference Time", fmt_ms_per_inference(avg_time_ms)},
+                        {"Average Throughput", fmt_fps(throughput_fps)}});
     }
     return 0;
   } catch (const std::exception& e) {

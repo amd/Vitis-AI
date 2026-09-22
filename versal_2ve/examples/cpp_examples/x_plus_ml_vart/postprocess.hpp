@@ -88,7 +88,7 @@ struct PostProcessConfig {
   AppLogLevel log_level;  ///< Component log level
 
   // Model information (from inference config)
-  uint32_t model_batch_size;                              ///< Model batch size
+  uint32_t model_batch_size;                              ///< Model output-side batch size (PostProcess operates on OFM tensors)
   uint32_t model_input_width;                             ///< Model input width for coordinate transformation
   uint32_t model_input_height;                            ///< Model input height for coordinate transformation
   uint32_t model_num_input_tensors;                       ///< Number of input tensors
@@ -301,7 +301,8 @@ class AppPostProcess {
   void run_metaconvert_overlay(const InferResultList& frame_results,
                                const InputFrame& original_frame,
                                int frame_index,
-                               int64_t iteration_number);
+                               int64_t iteration_number,
+                               const vart::InferResScaleInfo& scale_info);
 
   /**
    * @brief Convert VideoFrame to cv::Mat for saving

@@ -24,7 +24,11 @@
 #include <cmath>
 #include <filesystem>
 #include <iomanip>
+#include <sstream>
+#include <vector>
 #include "x_plus_ml_app.hpp"
+
+#include "common/app_utils.hpp"
 
 namespace fs = std::filesystem;
 using namespace vart;
@@ -295,32 +299,33 @@ static bool parse_pipeline_json_config(AppContext* ctx, PipelineContext* pipelin
         return false;
       }
 
-      /* Get maintain_aspect_ratio value and perform corresponding resizing
-       * technique based on the resizing-type value provided */
-      bool maintain_aspect_ratio = pipeline_config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
-      if (maintain_aspect_ratio) {
-        if (!pipeline_config.get_child("preprocess-config").count("resizing-type")) {
-          APP_LOG(AppLogLevel::ERROR, log_level,
-                  "Please provide resizing-type to maintain-aspect-ratio. "
-                  "Valid values are LETTERBOX / PANSCAN");
-          return false;
-        }
+      /* Select preprocessing strategy based on resizing-type */
+      if (pipeline_config.get_child("preprocess-config").count("resizing-type")) {
         string resizing_type_str = pipeline_config.get<string>("preprocess-config.resizing-type");
         if (resizing_type_str.compare(0, 7, "PANSCAN") == 0) {
-          preprocess_info->preprocess_type = PreProcessType::DEFAULT;
-          pipeline->do_pan_scan = true;
+          preprocess_info->preprocess_type = PreProcessType::PANSCAN;
         } else if (resizing_type_str.compare(0, 9, "LETTERBOX") == 0) {
           preprocess_info->preprocess_type = PreProcessType::LETTERBOX;
-          preprocess_info->symmetric_padding = pipeline_config.get<bool>("preprocess-config.symmetric-padding", false);
+        } else if (resizing_type_str.compare(0, 7, "DEFAULT") == 0) {
+          preprocess_info->preprocess_type = PreProcessType::DEFAULT;
+          /* For DEFAULT type, read maintain-aspect-ratio and symmetric-padding from JSON if provided */
+          preprocess_info->maintain_aspect_ratio =
+              pipeline_config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
+          preprocess_info->symmetric_padding =
+              pipeline_config.get<bool>("preprocess-config.symmetric-padding", false);
         } else {
-          APP_LOG(AppLogLevel::ERROR, log_level, "Unknown resizing-type: %s. Valid values are LETTERBOX / PANSCAN",
+          APP_LOG(AppLogLevel::ERROR, log_level, "Unknown resizing-type: %s. Valid values are DEFAULT / LETTERBOX / PANSCAN",
                   resizing_type_str.c_str());
           return false;
         }
       } else {
-        /* Use default preprocess type if maintain-aspect-ratio is not provided
-         */
+        /* resizing-type not provided: use DEFAULT */
         preprocess_info->preprocess_type = PreProcessType::DEFAULT;
+        /* For DEFAULT type, read maintain-aspect-ratio and symmetric-padding from JSON if provided */
+        preprocess_info->maintain_aspect_ratio =
+            pipeline_config.get<bool>("preprocess-config.maintain-aspect-ratio", false);
+        preprocess_info->symmetric_padding =
+            pipeline_config.get<bool>("preprocess-config.symmetric-padding", false);
       }
 
       /* Read the input and output memory bank indices for pre-processing module
@@ -437,17 +442,13 @@ static bool parse_pipeline_json_config(AppContext* ctx, PipelineContext* pipelin
       APP_LOG(AppLogLevel::DEBUG, log_level, "scale-g: %f", preprocess_info->scale_g);
       APP_LOG(AppLogLevel::DEBUG, log_level, "scale-b: %f", preprocess_info->scale_b);
 
-      bool maintain_aspect_ratio =
-          (preprocess_info->preprocess_type == PreProcessType::LETTERBOX || pipeline->do_pan_scan);
-      APP_LOG(AppLogLevel::DEBUG, log_level, "maintain-aspect-ratio: %d", maintain_aspect_ratio);
-
-      if (maintain_aspect_ratio) {
-        string resizing_type_str = pipeline->do_pan_scan ? "PANSCAN" : "LETTERBOX";
-        APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: %s", resizing_type_str.c_str());
-      }
-
-      if (preprocess_info->preprocess_type == PreProcessType::LETTERBOX) {
-        APP_LOG(AppLogLevel::DEBUG, log_level, "symmetric-padding: %d", preprocess_info->symmetric_padding);
+      if (preprocess_info->preprocess_type == PreProcessType::PANSCAN) {
+        APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: PANSCAN");
+      } else if (preprocess_info->preprocess_type == PreProcessType::LETTERBOX) {
+        APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: LETTERBOX");
+      } else if (preprocess_info->preprocess_type == PreProcessType::DEFAULT) {
+        APP_LOG(AppLogLevel::DEBUG, log_level, "resizing-type: DEFAULT, maintain-aspect-ratio: %d, symmetric-padding: %d",
+                preprocess_info->maintain_aspect_ratio, preprocess_info->symmetric_padding);
       }
     }
 
@@ -611,23 +612,36 @@ static bool parse_json_config(AppContext* ctx) {
  */
 bool transform_infer_result(AppContext* ctx,
                             PipelineContext* pipeline,
-                            vector<shared_ptr<vart::InferResult>>& root_res) {
+                            vector<shared_ptr<vart::InferResult>>& root_res,
+                            const vart::InferResScaleInfo* frame_scale_info = nullptr) {
   const vector<shared_ptr<vart::InferResult>>& result = (root_res.back())->get_children();
 
   AppLogLevel log_level = ctx->log_level;
   InferResScaleInfo info = {};
-  info.model_input_width = pipeline->model_info.model_width;
-  info.model_input_height = pipeline->model_info.model_height;
-  info.input_frame_width = pipeline->input_width;
-  info.input_frame_height = pipeline->input_height;
+  if (pipeline->preprocess_enable) {
+    if (frame_scale_info != nullptr) {
+      info = *frame_scale_info;
+    } else {
+      info = pipeline->scale_info;
+    }
+  } else {
+    /* No preprocess geometry — set only frame and model sizes. scale_x/y,
+     * crop_*, and pad_* stay zero so transform() uses uniform stretch scaling. */
+    info.model_input_width = pipeline->model_info.model_width;
+    info.model_input_height = pipeline->model_info.model_height;
+    info.input_frame_width = pipeline->input_width;
+    info.input_frame_height = pipeline->input_height;
+  }
 
   APP_LOG(AppLogLevel::DEBUG, log_level,
           "Transform the post-processed prediction back to the original "
           "input frame");
-  APP_LOG(AppLogLevel::DEBUG, log_level, "Width scaler factor %f",
-          static_cast<float>(pipeline->input_width) / pipeline->model_info.model_width);
-  APP_LOG(AppLogLevel::DEBUG, log_level, "Height scaler factor %f",
-          static_cast<float>(pipeline->input_height) / pipeline->model_info.model_height);
+  if (info.scale_x == 0.0f && info.scale_y == 0.0f) {
+    APP_LOG(AppLogLevel::DEBUG, log_level, "Width scaler factor %f",
+            static_cast<float>(pipeline->input_width) / pipeline->model_info.model_width);
+    APP_LOG(AppLogLevel::DEBUG, log_level, "Height scaler factor %f",
+            static_cast<float>(pipeline->input_height) / pipeline->model_info.model_height);
+  }
 
   APP_LOG(AppLogLevel::INFO, log_level, "Results after transform:");
   for (auto& itr : result) {
@@ -757,7 +771,68 @@ int read_user_inputs(int argc, char* argv[], AppContext* ctx) {
 }
 
 /**
- * @brief Compares inference results between pipeline 1 and pipeline 2
+ * @brief Logs a single pipeline's inference results, formatted per each
+ * result's own result_type.
+ * @param results Reference to inference results for this pipeline
+ * @param pipeline_num Pipeline number, used only for log labeling (1 or 2)
+ * @param log_level Application log level
+ */
+void log_pipeline_results(const vector<vector<shared_ptr<vart::InferResult>>>& results, int pipeline_num,
+                           AppLogLevel log_level) {
+  APP_LOG(AppLogLevel::INFO, log_level, "Pipeline %d results: %zu batches", pipeline_num, results.size());
+
+  for (size_t batch_idx = 0; batch_idx < results.size(); batch_idx++) {
+    APP_LOG(AppLogLevel::INFO, log_level, "Pipeline %d Batch %zu: %zu results", pipeline_num, batch_idx,
+            results[batch_idx].size());
+
+    for (size_t result_idx = 0; result_idx < results[batch_idx].size(); result_idx++) {
+      auto& result = results[batch_idx][result_idx];
+      if (!result) {
+        APP_LOG(AppLogLevel::WARNING, log_level, "  Pipeline %d Result %zu: null result", pipeline_num, result_idx);
+        continue;
+      }
+
+      InferResultData* data = result->get_infer_result();
+      if (!data) {
+        APP_LOG(AppLogLevel::WARNING, log_level, "  Pipeline %d Result %zu: null result data", pipeline_num,
+                result_idx);
+        continue;
+      }
+
+      if (data->result_type == vart::InferResultType::CLASSIFICATION) {
+        ClassificationResData* cls = static_cast<ClassificationResData*>(data);
+        if (!cls->label.empty() && !cls->confidence.empty()) {
+          string labels = "";
+          for (size_t i = 0; i < cls->label.size(); ++i) {
+            if (i > 0)
+              labels += ", ";
+            labels += cls->label[i];
+          }
+          APP_LOG(AppLogLevel::INFO, log_level, "  Pipeline %d: %s (%.6f)", pipeline_num, labels.c_str(),
+                  cls->confidence[0]);
+        } else {
+          APP_LOG(AppLogLevel::WARNING, log_level, "  Pipeline %d Result %zu: Empty classification results",
+                  pipeline_num, result_idx);
+        }
+      } else if (data->result_type == vart::InferResultType::DETECTION) {
+        DetectionResData* det = static_cast<DetectionResData*>(data);
+        APP_LOG(AppLogLevel::INFO, log_level,
+                "  Pipeline %d: Detection bbox x : %d y : %d width : %u height : %u and label : %s (%.6f)",
+                pipeline_num, det->x, det->y, det->width, det->height, det->label.c_str(), det->confidence);
+      } else {
+        APP_LOG(AppLogLevel::INFO, log_level, "  Pipeline %d Result %zu: result_type=%d", pipeline_num, result_idx,
+                static_cast<int>(data->result_type));
+      }
+    }
+  }
+}
+
+/**
+ * @brief Prints inference results for pipeline 1 and pipeline 2
+ * independently, each formatted according to its own result_type. Unlike a
+ * paired comparison, this does not require both pipelines to produce the
+ * same result type -- so it correctly reports pipelines running different
+ * model types (e.g. classification on one, detection on the other).
  * @param pipeline1_results Reference to inference results from pipeline 1
  * (data.inference_results)
  * @param pipeline2_results Reference to inference results from pipeline 2
@@ -765,82 +840,14 @@ int read_user_inputs(int argc, char* argv[], AppContext* ctx) {
  * @param filename Input filename for logging
  * @param log_level Application log level
  */
-void compare_inference_results(const vector<vector<shared_ptr<vart::InferResult>>>& pipeline1_results,
-                               const vector<vector<shared_ptr<vart::InferResult>>>& pipeline2_results,
-                               const string& filename,
-                               AppLogLevel log_level) {
+void print_inference_results(const vector<vector<shared_ptr<vart::InferResult>>>& pipeline1_results,
+                              const vector<vector<shared_ptr<vart::InferResult>>>& pipeline2_results,
+                              const string& filename,
+                              AppLogLevel log_level) {
   APP_LOG(AppLogLevel::INFO, log_level, "=== Inference Results for %s ===", filename.c_str());
 
-  APP_LOG(AppLogLevel::INFO, log_level, "Pipeline 1 results: %zu batches", pipeline1_results.size());
-  APP_LOG(AppLogLevel::INFO, log_level, "Pipeline 2 results: %zu batches", pipeline2_results.size());
-
-  size_t min_batches = min(pipeline1_results.size(), pipeline2_results.size());
-
-  for (size_t batch_idx = 0; batch_idx < min_batches; batch_idx++) {
-    APP_LOG(AppLogLevel::INFO, log_level, "Batch %zu:", batch_idx);
-    APP_LOG(AppLogLevel::INFO, log_level, "  Pipeline 1: %zu results", pipeline1_results[batch_idx].size());
-    APP_LOG(AppLogLevel::INFO, log_level, "  Pipeline 2: %zu results", pipeline2_results[batch_idx].size());
-
-    // Compare individual results in this batch
-    size_t min_results = min(pipeline1_results[batch_idx].size(), pipeline2_results[batch_idx].size());
-    for (size_t result_idx = 0; result_idx < min_results; result_idx++) {
-      auto& p1_result = pipeline1_results[batch_idx][result_idx];
-      auto& p2_result = pipeline2_results[batch_idx][result_idx];
-
-      if (p1_result && p2_result) {
-        APP_LOG(AppLogLevel::DEBUG, log_level, "    Result %zu: Both pipelines have valid results", result_idx);
-
-        // Get inference result data for comparison
-        InferResultData* p1_data = p1_result->get_infer_result();
-        InferResultData* p2_data = p2_result->get_infer_result();
-
-        if (p1_data && p2_data) {
-          APP_LOG(AppLogLevel::DEBUG, log_level, "      Pipeline 1 result type: %d",
-                  static_cast<int>(p1_data->result_type));
-          APP_LOG(AppLogLevel::DEBUG, log_level, "      Pipeline 2 result type: %d",
-                  static_cast<int>(p2_data->result_type));
-
-          // Compare classification results
-          if (p1_data->result_type == vart::InferResultType::CLASSIFICATION &&
-              p2_data->result_type == vart::InferResultType::CLASSIFICATION) {
-            ClassificationResData* p1_cls = static_cast<ClassificationResData*>(p1_data);
-            ClassificationResData* p2_cls = static_cast<ClassificationResData*>(p2_data);
-
-            // Print top prediction results for both pipelines
-            if (!p1_cls->label.empty() && !p1_cls->confidence.empty() && !p2_cls->label.empty() &&
-                !p2_cls->confidence.empty()) {
-              // Print P1 results in first line
-              string p1_labels = "";
-              for (size_t i = 0; i < p1_cls->label.size(); ++i) {
-                if (i > 0)
-                  p1_labels += ", ";
-                p1_labels += p1_cls->label[i];
-              }
-              APP_LOG(AppLogLevel::INFO, log_level, "      P1: %s (%.6f)", p1_labels.c_str(), p1_cls->confidence[0]);
-
-              // Print P2 results in second line
-              string p2_labels = "";
-              for (size_t i = 0; i < p2_cls->label.size(); ++i) {
-                if (i > 0)
-                  p2_labels += ", ";
-                p2_labels += p2_cls->label[i];
-              }
-              APP_LOG(AppLogLevel::INFO, log_level, "      P2: %s (%.6f)", p2_labels.c_str(), p2_cls->confidence[0]);
-            } else {
-              APP_LOG(AppLogLevel::WARNING, log_level, "      Empty classification results detected");
-            }
-          } else {
-            APP_LOG(AppLogLevel::WARNING, log_level, "      Non-classification results detected");
-          }
-        } else {
-          APP_LOG(AppLogLevel::WARNING, log_level, "    Result %zu: One or both pipelines have null result data",
-                  result_idx);
-        }
-      } else {
-        APP_LOG(AppLogLevel::WARNING, log_level, "    Result %zu: One or both pipelines have null results", result_idx);
-      }
-    }
-  }
+  log_pipeline_results(pipeline1_results, 1, log_level);
+  log_pipeline_results(pipeline2_results, 2, log_level);
 
   APP_LOG(AppLogLevel::INFO, log_level, "=== End of Inference Results for %s ===", filename.c_str());
 }
@@ -916,7 +923,11 @@ void run_pipeline1_thread(AppContext& app_ctx) {
                         data.pipeline_id);
 
               // Transform results to match original input resolution
-              if (!transform_infer_result(&app_ctx, &pipeline, root_res)) {
+              const vart::InferResScaleInfo* frame_scale_info = nullptr;
+              if (pipeline.preprocess_enable && i < data.scale_info.size()) {
+                frame_scale_info = &data.scale_info[i];
+              }
+              if (!transform_infer_result(&app_ctx, &pipeline, root_res, frame_scale_info)) {
                 APP_LOG(AppLogLevel::ERROR, log_level, "Failed to transform results for pipeline %d", data.pipeline_id);
                 continue;
               }
@@ -968,19 +979,38 @@ void run_pipeline1_thread(AppContext& app_ctx) {
           }
         }
 
-        // Create data for pipeline 2 (cascading)
-        PipelineData data2(vector<shared_ptr<vart::VideoFrame>>(), vector<shared_ptr<vart::VideoFrame>>(),
-                           vector<PredResult>(), "", -1, -1, 0);
-        while (!app_ctx.input_pipeline_queue.pop(data2)) {
-          continue;  // Timeout or no data, continue loop
-        }
+        // Check whether this pipeline has a cascade partner.
+        // With an odd model count the last pipeline has no partner and is
+        // handled entirely here in pipeline1_thread; it notifies the main
+        // thread directly rather than delegating to pipeline2_thread.
+        bool has_cascade_partner = (data.pipeline_id + 1) < app_ctx.num_active_pipelines;
 
-        PipelineData cascaded_data(data2.input_frames, data2.preprocessed_frames, inference_results, data2.filename,
-                                   data2.file_index, data2.pipeline_id, data2.iteration_counter);
+        if (has_cascade_partner) {
+          // Create data for pipeline 2 (cascading)
+          PipelineData data2(vector<shared_ptr<vart::VideoFrame>>(), vector<shared_ptr<vart::VideoFrame>>(),
+                             vector<PredResult>(), "", -1, -1, 0);
+          while (!app_ctx.input_pipeline_queue.pop(data2)) {
+            continue;  // Timeout or no data, continue loop
+          }
 
-        // Push to cascaded queue for pipeline 2
-        if (!app_ctx.cascaded_queue.push(cascaded_data)) {
-          APP_LOG(AppLogLevel::ERROR, log_level, "Failed to push data to cascaded queue");
+          PipelineData cascaded_data(data2.input_frames, data2.preprocessed_frames, inference_results, data2.filename,
+                                     data2.file_index, data2.pipeline_id, data2.iteration_counter);
+
+          // Push to cascaded queue for pipeline 2
+          if (!app_ctx.cascaded_queue.push(cascaded_data)) {
+            APP_LOG(AppLogLevel::ERROR, log_level, "Failed to push data to cascaded queue");
+          }
+        } else {
+          // Odd last pipeline: no cascade partner — notify main thread directly
+          // so it does not block waiting for a pipeline2_thread signal that
+          // will never arrive for this pipeline.
+          APP_LOG(AppLogLevel::DEBUG, log_level,
+                  "Solo last pipeline %d (odd model count): notifying main thread directly", data.pipeline_id);
+          {
+            std::lock_guard<std::mutex> lock(app_ctx.mtx);
+            app_ctx.notify_count++;
+          }
+          app_ctx.cv.notify_one();
         }
         // Single pipeline: release buffers here since no cascading
         for (auto& frame : data.input_frames) {
@@ -1088,7 +1118,11 @@ void run_pipeline2_thread(AppContext& app_ctx) {
                         data.pipeline_id);
 
               // Transform results to match original input resolution
-              if (!transform_infer_result(&app_ctx, &pipeline, root_res)) {
+              const vart::InferResScaleInfo* frame_scale_info = nullptr;
+              if (pipeline.preprocess_enable && i < data.scale_info.size()) {
+                frame_scale_info = &data.scale_info[i];
+              }
+              if (!transform_infer_result(&app_ctx, &pipeline, root_res, frame_scale_info)) {
                 APP_LOG(AppLogLevel::ERROR, log_level, "Failed to transform results for pipeline %d", data.pipeline_id);
                 continue;
               }
@@ -1136,13 +1170,13 @@ void run_pipeline2_thread(AppContext& app_ctx) {
           }
         }
 
-        // Compare inference results between pipeline 1 and pipeline 2
+        // Print inference results for pipeline 1 and pipeline 2
         if (!data.inference_results.empty() && !final_results.empty()) {
-          APP_LOG(AppLogLevel::DEBUG, log_level, "Comparing results: P1 has %zu batches, P2 has %zu batches",
+          APP_LOG(AppLogLevel::DEBUG, log_level, "Printing results: P1 has %zu batches, P2 has %zu batches",
                   data.inference_results.size(), final_results.size());
-          compare_inference_results(data.inference_results, final_results, data.filename, log_level);
+          print_inference_results(data.inference_results, final_results, data.filename, log_level);
         } else {
-          APP_LOG(AppLogLevel::DEBUG, log_level, "Skipping comparison - P1 results: %zu, P2 results: %zu",
+          APP_LOG(AppLogLevel::DEBUG, log_level, "Skipping print - P1 results: %zu, P2 results: %zu",
                   data.inference_results.size(), final_results.size());
         }
 
@@ -1167,7 +1201,7 @@ void run_pipeline2_thread(AppContext& app_ctx) {
         APP_LOG(AppLogLevel::ERROR, log_level, "Exception in pipeline2 thread: %s", e.what());
         {
           std::lock_guard<std::mutex> lock(app_ctx.mtx);
-          app_ctx.thread_processed = true;
+          app_ctx.notify_count++;
         }
         APP_LOG(AppLogLevel::DEBUG, log_level, "Notifying main thread after exception in pipeline 2");
         app_ctx.cv.notify_one();
@@ -1175,7 +1209,7 @@ void run_pipeline2_thread(AppContext& app_ctx) {
     }
     {
       std::lock_guard<std::mutex> lock(app_ctx.mtx);
-      app_ctx.thread_processed = true;
+      app_ctx.notify_count++;
     }
     APP_LOG(AppLogLevel::DEBUG, log_level, "Notifying main thread after processing frame %d in pipeline 2",
             data.file_index);
@@ -1356,7 +1390,9 @@ int main(int argc, char* argv[]) {
 
       /* Collect all frames for this pipeline's batch before pushing to queue */
       vector<shared_ptr<vart::VideoFrame>> batch_frames;
+      vector<vart::InferResScaleInfo> batch_scale_info;
       batch_frames.reserve(frames_to_read_per_pipeline[pipeline_idx]);
+      batch_scale_info.reserve(frames_to_read_per_pipeline[pipeline_idx]);
 
       /* Loop over the frames to be read for this pipeline's batch */
       for (uint32_t frm_idx = 0; frm_idx < frames_to_read_per_pipeline[pipeline_idx]; frm_idx++) {
@@ -1438,6 +1474,7 @@ int main(int argc, char* argv[]) {
           /* Collect preprocessed frame for batch processing */
           if (ctx.pipelines[pipeline_idx].preprocess_enable) {
             batch_frames.push_back(preprocess_out_frames[pipeline_idx][frm_idx]);
+            batch_scale_info.push_back(ctx.pipelines[pipeline_idx].scale_info);
           } else {
             batch_frames.push_back(input_frames[pipeline_idx][frm_idx]);
           }
@@ -1484,6 +1521,7 @@ int main(int argc, char* argv[]) {
         PipelineData pipeline_data(input_frames[pipeline_idx], batch_frames, vector<PredResult>(),
                                    ctx.pipelines[pipeline_idx].input_file_path, num_frame_processed, pipeline_idx,
                                    ctx.iteration_counter);
+        pipeline_data.scale_info = std::move(batch_scale_info);
 
         if (!ctx.input_pipeline_queue.push(pipeline_data)) {
           APP_LOG(AppLogLevel::WARNING, log_level, "Failed to push batch to pipeline queue for pipeline %d",
@@ -1539,8 +1577,16 @@ int main(int argc, char* argv[]) {
     {
       std::unique_lock<std::mutex> lock(ctx.mtx);
 
-      ctx.cv.wait(lock, [&ctx] { return ctx.thread_processed; });
-      ctx.thread_processed = false;
+      // notify_count tracks how many pipeline pairs have finished this iteration.
+      // Each cascaded pair increments notify_count via pipeline2_thread; for odd
+      // model counts the solo last pipeline notifies directly from pipeline1_thread.
+      // Ceiling division (num_active_pipelines + 1) / 2 gives the expected signal count:
+      //   even: (4+1)/2 = 2  →  2 pairs, 2 signals       ✓
+      //   odd:  (3+1)/2 = 2  →  1 pair + 1 solo = 2 signals ✓
+      // Main thread waits here to avoid cycling output files while pipeline2 is
+      // still writing — otherwise files close prematurely producing 0-byte outputs.
+      ctx.cv.wait(lock, [&ctx] { return ctx.notify_count >= (ctx.num_active_pipelines + 1) / 2; });
+      ctx.notify_count = 0;
     }
     std::cout << "Main thread processing completed for iteration " << ctx.iteration_counter << std::endl;
 
@@ -1588,7 +1634,12 @@ killall:
   APP_LOG(AppLogLevel::INFO, log_level, "Multithreaded processing completed");
 
   cout << "Total number of samples processed on all pipelines: " << num_frame_processed << endl;
-  /* To calulate average of all the pipelines */
+  /* Per-pipeline frame count used for the per-pipeline stage averages below. This app constrains
+   * batch size to 1 and reads exactly one frame per active pipeline each iteration, so
+   * num_frame_processed is always an exact multiple of num_active_pipelines and every pipeline
+   * processes frames_processed_per_pipe frames. The aggregate NPU-throughput block further down
+   * intentionally uses the fleet total (num_frame_processed) instead, since these two counts are
+   * different quantities related by num_frame_processed == frames_processed_per_pipe * num_active_pipelines. */
   uint32_t frames_processed_per_pipe = num_frame_processed / ctx.num_active_pipelines;
   cout << "Total number of samples processed on per pipeline: " << frames_processed_per_pipe << endl;
 
@@ -1602,53 +1653,51 @@ killall:
   }
 
   if (ctx.is_benchmark_enabled && frames_processed_per_pipe) {
-    cout << "----------------------------------------\n";
-    cout << "Performance metrics per pipeline:\n";
-
+    std::vector<std::vector<std::string>> perf_rows;
     for (int pipeline_idx = 0; pipeline_idx < ctx.num_active_pipelines; pipeline_idx++) {
-      cout << "Pipeline " << pipeline_idx << ":\n";
+      auto& pipe = ctx.pipelines[pipeline_idx];
+      const bool has_preprocess = pipe.preprocess_enable;
+      const bool has_postprocess = pipe.postprocess_enable;
+      const bool has_overlay = !pipe.out_file_path.empty();
 
-      if (ctx.pipelines[pipeline_idx].preprocess_enable) {
-        cout << "  Average time for Pre-process : "
-             << (ctx.pipelines[pipeline_idx].total_preprocess_time / 1000.0) / frames_processed_per_pipe << " ms\n";
-      }
-      cout << "  Average time for Inference : "
-           << (ctx.pipelines[pipeline_idx].total_infer_time / 1000.0) / frames_processed_per_pipe << " ms\n";
-      if (ctx.pipelines[pipeline_idx].postprocess_enable) {
-        cout << "  Average time for Post-process : "
-             << (ctx.pipelines[pipeline_idx].total_postprocess_time / 1000.0) / frames_processed_per_pipe << " ms\n";
-      }
-      if (!ctx.pipelines[pipeline_idx].out_file_path.empty()) {
-        cout << "  Average time for Overlay : "
-             << (ctx.pipelines[pipeline_idx].total_overlay_time / 1000.0) / frames_processed_per_pipe << " ms\n";
-      }
+      /* Batch size is constrained to 1 for this app, so per-frame == per-inference. */
+      const double pre_ms = (pipe.total_preprocess_time / 1000.0) / frames_processed_per_pipe;
+      const double inf_ms = (pipe.total_infer_time / 1000.0) / frames_processed_per_pipe;
+      const double post_ms = (pipe.total_postprocess_time / 1000.0) / frames_processed_per_pipe;
+      const double overlay_ms = (pipe.total_overlay_time / 1000.0) / frames_processed_per_pipe;
 
-      ctx.pipelines[pipeline_idx].total_time =
-          ctx.pipelines[pipeline_idx].total_preprocess_time + ctx.pipelines[pipeline_idx].total_infer_time +
-          ctx.pipelines[pipeline_idx].total_postprocess_time + ctx.pipelines[pipeline_idx].total_overlay_time;
+      /* Pipeline latency is the sum of the enabled stages; throughput = 1000 / pipeline latency. */
+      double pipeline_ms = inf_ms;
+      if (has_preprocess) pipeline_ms += pre_ms;
+      if (has_postprocess) pipeline_ms += post_ms;
+      if (has_overlay) pipeline_ms += overlay_ms;
+      const double pipeline_fps = (pipeline_ms > 0.0) ? (1000.0 / pipeline_ms) : 0.0;
 
-      cout << "  Average  total time for Pipeline " << pipeline_idx << ": "
-           << (ctx.pipelines[pipeline_idx].total_time / 1000.0) / frames_processed_per_pipe << " ms\n";
-      cout << "  Average  FPS for Pipeline " << pipeline_idx << ": "
-           << (frames_processed_per_pipe * 1000000.0) / ctx.pipelines[pipeline_idx].total_time << " fps\n";
+      const std::string label = "Pipeline " + std::to_string(pipeline_idx + 1);
+      perf_rows.push_back({label, "PreProcess", has_preprocess ? (fmt2(pre_ms) + " ms/frame") : "-", "-"});
+      perf_rows.push_back({"", "Inference", fmt_ms_per_inference(inf_ms), "-"});
+      perf_rows.push_back({"", "PostProcess", has_postprocess ? (fmt2(post_ms) + " ms/frame") : "-", "-"});
+      perf_rows.push_back({"", "Overlay", has_overlay ? (fmt2(overlay_ms) + " ms/frame") : "-", "-"});
+      perf_rows.push_back({"", "Pipeline", fmt2(pipeline_ms) + " ms/frame", fmt2(pipeline_fps)});
     }
-  }
-  if (ctx.is_benchmark_enabled) {
-    cout << "==========================================================" << endl;
+    print_perf_table({"Pipelines", "Category", "Time", "Throughput (FPS)"}, perf_rows);
+    cout << "All values are averages over the run. Throughput (FPS) is reported for the Pipeline only.\n"
+         << "Pipeline Throughput (FPS) = 1000 / Pipeline time (ms per frame)." << endl;
 
-    int processed_count = frames_processed_per_pipe;
-    double total_inf_time_us = calculate_total_inference_time_us(ctx.inference_intervals);
-    double total_inf_time_ms = total_inf_time_us / 1000.0;
-
-    if (processed_count > 0 && total_inf_time_ms > 0.0) {
-      double avg_inf_time_ms = total_inf_time_ms / processed_count;
-      double inf_fps = (1000.0 * processed_count) / total_inf_time_ms;
-
-      cout << "Total inference time: " << total_inf_time_ms << "ms for " << processed_count << " samples, average "
-           << avg_inf_time_ms << "ms per sample. Total inference FPS: " << inf_fps << endl;
-    } else {
-      cout << "No valid samples processed or zero inference time detected" << endl;
-    }
+    /* Aggregate NPU inference throughput across all pipelines. The pipelines run inference
+     * concurrently in separate threads, so their inference intervals overlap in wall-clock time;
+     * summing the per-pipeline inference times would double-count that overlap. Each inference call
+     * records its {start, end} interval into ctx.inference_intervals, and
+     * calculate_total_inference_time_us() merges the overlapping intervals into their time union -
+     * the actual wall-clock the NPU spent running inference. Aggregate throughput is then the total
+     * samples processed across all pipelines divided by that union time. (Threads have already been
+     * joined at this point, so ctx.inference_intervals is safe to read without the timing mutex.) */
+    const double total_infer_union_ms = calculate_total_inference_time_us(ctx.inference_intervals) / 1000.0;
+    const double aggregate_infer_fps =
+        (total_infer_union_ms > 0.0) ? (static_cast<double>(num_frame_processed) * 1000.0 / total_infer_union_ms) : 0.0;
+    cout << "Combined inference wall-clock across pipelines: " << fmt2(total_infer_union_ms) << " ms for "
+         << num_frame_processed << " samples => " << fmt2(aggregate_infer_fps)
+         << " FPS (aggregate NPU throughput, accounting for concurrent-pipeline overlap)." << endl;
   }
 
   if (ctx.log_level < AppLogLevel::RESULT)

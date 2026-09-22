@@ -134,7 +134,6 @@ size_t get_tensor_size_in_bytes(Ort::ConstTensorTypeAndShapeInfo ort_tensor_info
     case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
       size_in_bytes = size * sizeof(int8_t);
       break;
-    // TODO Handle other formats as well
     default:
       break;
   }
@@ -228,7 +227,6 @@ Ort::Value create_input_tensor(AppLogLevel log_level, const InferTensorInfo& ten
       /* Formats with float data that directly match the tensor's format */
       float_data = reinterpret_cast<float32_t*>(map_info.planes[0].data);
     } else {
-      // TODO get string form of mapinfo.fmt
       APP_LOG(AppLogLevel::ERROR, log_level, "Video Format %d is not compatible with shape format %s",
               static_cast<int>(map_info.fmt), get_memory_layout_string(tensor_info.meta.memory_layout).c_str());
       std::stringstream ss;
@@ -431,15 +429,45 @@ bool create_inference_context(PipelineContext* pipeline_ctx,
   try {
     std::basic_string<ORTCHAR_T> model_file = pipeline_ctx->model_path;
 
-    /* Parse Vitis AI specific options */
+    /* Parse Vitis AI specific options.
+     * Hyphenated key schema (e.g. "config-file") is recommended; the underscore
+     * schema (e.g. "config_file") is maintained for backward compatibility. */
     Ort::SessionOptions session_options;
     auto options = std::unordered_map<std::string, std::string>{};
-    options["config_file"] = config.get<std::string>("inference-config.execution-provider-options.config_file");
-    options["cache_dir"] = config.get<std::string>("inference-config.execution-provider-options.cache_dir");
+    auto config_file_node = config.get_optional<std::string>("inference-config.execution-provider-options.config-file");
+    if (!config_file_node) {
+      config_file_node = config.get_optional<std::string>("inference-config.execution-provider-options.config_file");
+    }
+    if (!config_file_node) {
+      throw std::runtime_error("Missing required field: inference-config.execution-provider-options.config-file");
+    }
+    options["config_file"] = *config_file_node;
+
+    auto cache_dir_node = config.get_optional<std::string>("inference-config.execution-provider-options.cache-dir");
+    if (!cache_dir_node) {
+      cache_dir_node = config.get_optional<std::string>("inference-config.execution-provider-options.cache_dir");
+    }
+    if (!cache_dir_node) {
+      throw std::runtime_error("Missing required field: inference-config.execution-provider-options.cache-dir");
+    }
+    options["cache_dir"] = *cache_dir_node;
+
     options["target"] = config.get<std::string>("inference-config.execution-provider-options.target");
-    options["cache_key"] = config.get<std::string>("inference-config.execution-provider-options.cache_key");
+
+    auto cache_key_node = config.get_optional<std::string>("inference-config.execution-provider-options.cache-key");
+    if (!cache_key_node) {
+      cache_key_node = config.get_optional<std::string>("inference-config.execution-provider-options.cache_key");
+    }
+    if (!cache_key_node) {
+      throw std::runtime_error("Missing required field: inference-config.execution-provider-options.cache-key");
+    }
+    options["cache_key"] = *cache_key_node;
     // Parse optional options
     std::vector<std::pair<std::string, std::string>> option_keys = {
+        {"encryption_key", "inference-config.execution-provider-options.encryption-key"},
+        {"ai_analyzer_visualization", "inference-config.execution-provider-options.ai-analyzer-visualization"},
+        {"ai_analyzer_profiling", "inference-config.execution-provider-options.ai-analyzer-profiling"}};
+    std::vector<std::pair<std::string, std::string>> legacy_option_keys = {
         {"encryption_key", "inference-config.execution-provider-options.encryption_key"},
         {"ai_analyzer_visualization",
          "inference-config.execution-provider-options.ai_analyzer_"
@@ -449,6 +477,21 @@ bool create_inference_context(PipelineContext* pipeline_ctx,
     for (const auto& [option_name, config_key] : option_keys) {
       if (auto opt = config.get_optional<std::string>(config_key)) {
         options[option_name] = *opt;
+      }
+    }
+    // Backward-compatibility pass: only fills in options not already set above,
+    // so the legacy underscored key never overrides a hyphenated one. Logs a
+    // debug diagnostic if both spellings are present, since the legacy one is
+    // silently ignored.
+    for (const auto& [option_name, config_key] : legacy_option_keys) {
+      if (auto opt = config.get_optional<std::string>(config_key)) {
+        if (options.find(option_name) == options.end()) {
+          options[option_name] = *opt;
+        } else {
+          APP_LOG(AppLogLevel::DEBUG, log_level,
+                  "Both hyphenated and legacy underscored keys given for '%s'; using the hyphenated value.",
+                  option_name.c_str());
+        }
       }
     }
     session_options.AppendExecutionProvider_VitisAI(options);
@@ -564,8 +607,6 @@ bool create_inference_context(PipelineContext* pipeline_ctx,
       model_info->out_tensors_info[i].meta.type = ort_tensor_info.GetElementType();
       model_info->out_tensors_info[i].meta.data_type = map_onnx_data_type(model_info->out_tensors_info[i].meta.type);
       model_info->out_tensors_info[i].meta.size_in_bytes = get_tensor_size_in_bytes(ort_tensor_info);
-      // TODO create a tensor in runtime wrapped with data required by
-      // postprocessing
       auto tensor = Ort::Value::CreateTensor(
           model_info->allocator, model_info->out_tensors_info[i].meta.shape_i64.data(),
           model_info->out_tensors_info[i].meta.shape_i64.size(), model_info->out_tensors_info[i].meta.type);

@@ -235,8 +235,12 @@ struct AppContext {
  */
 void init_app_context(AppContext* ctx);
 
-const char* to_string(vart::MemoryLayout l);
-const char* to_string(vart::DataType d);
+/**
+ * @brief Convert a vart::VideoFormat enum to a string.
+ *
+ * @param f  VideoFormat enum value.
+ * @return String representation of the VideoFormat.
+ */
 const char* to_string(vart::VideoFormat f);
 
 /**
@@ -267,9 +271,13 @@ vart::VideoFormat get_vart_video_format(const string& fmt);
  * @param colour_space  Simple colour-space string ("RGB" or "BGR").
  * @param layout        MemoryLayout from the inference input tensor.
  * @param dtype         DataType from the inference input tensor.
+ * @param shape         Full tensor shape metadata.
  * @return vart::VideoFormat, or VideoFormat::UNKNOWN on unsupported combination.
  */
-vart::VideoFormat derive_vart_video_format(const string& colour_space, vart::MemoryLayout layout, vart::DataType dtype);
+vart::VideoFormat derive_vart_video_format(const string& colour_space,
+                                           vart::MemoryLayout layout,
+                                           vart::DataType dtype,
+                                           const std::vector<uint32_t>& shape);
 
 /**
  * @brief Infer a preprocess-compatible layout for a GENERIC input tensor.

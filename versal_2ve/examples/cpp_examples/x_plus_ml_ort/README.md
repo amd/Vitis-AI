@@ -180,28 +180,28 @@ With temporal sharing active, both models appear as two HW Contexts under a sing
 
 ```
 ---------------------------
-[0000:00:00.0] : Telluride
+[0000:00:00.0] : AMD Versal Prime Gen2
 ---------------------------
 AIE Partitions
-  Total Memory Usage: N/A
+  Total NPU Memory Usage: N/A
   Partition Index   : 0
     Columns: [0, 1, 2, 3]
     HW Contexts:
-      |PID                 |Ctx ID     |Submissions |Migrations  |Err  |Priority |
-      |Process Name        |Status     |Completions |Suspensions |     |GOPS     |
-      |Memory Usage        |Instr BO   |            |            |     |FPS      |
-      |                    |           |            |            |     |Latency  |
-      |====================|===========|============|============|=====|=========|
-      |1196                |1          |98          |0           |0    |Normal   |
-      |N/A                 |Idle       |97          |0           |     |1        |
-      |66 MB               |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
-      |1196                |2          |120         |0           |0    |Normal   |
-      |N/A                 |Idle       |119         |0           |     |1        |
-      |66 MB               |N/A        |            |            |     |1        |
-      |                    |           |            |            |     |2000     |
-      |--------------------|-----------|------------|------------|-----|---------|
+      |PID                 |Ctx ID     |Submissions |Migrations  |Frame Evts |Err  |Priority |
+      |Process Name        |Status     |Completions |Suspensions |Layer Evts |     |GOPS     |
+      |NPU Memory Usage    |Instr BO   |            |            |           |     |FPS      |
+      |                    |           |            |            |           |     |Latency  |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1196                |1          |98          |0           |0          |0    |Normal   |
+      |N/A                 |Idle       |97          |0           |0          |     |1        |
+      |66 MB               |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
+      |1196                |2          |120         |0           |0          |0    |Normal   |
+      |N/A                 |Idle       |119         |0           |0          |     |1        |
+      |66 MB               |N/A        |            |            |           |     |1        |
+      |                    |           |            |            |           |     |2000     |
+      |--------------------|-----------|------------|------------|-----------|-----|---------|
 ```
 
 Two contexts (`Ctx ID 1` and `Ctx ID 2`) sharing the same `Partition Index 0` on `Columns: [0, 1, 2, 3]` confirms temporal sharing is active. If the command is run after inference completes, the partition is released and `No hardware contexts running on device` is shown instead.
@@ -219,7 +219,7 @@ The application supports two batch size modes depending on how the ONNX model wa
 
 **Static batch** — the batch dimension is fixed in the ONNX model's input shape (e.g. `[6, 3, 224, 224]`). The app reads it directly from the model; no additional configuration is needed.
 
-**Dynamic batch** — the ONNX model has a dynamic batch dimension (`-1`, e.g. `[-1, 3, 224, 224]`). The app cannot infer the intended batch size from the model alone, so it reads `dp_size` from the `vaiml_config` section of the VitisAI config JSON (the file referenced by `execution-provider-options.config_file` in the model config):
+**Dynamic batch** — the ONNX model has a dynamic batch dimension (`-1`, e.g. `[-1, 3, 224, 224]`). The app cannot infer the intended batch size from the model alone, so it reads `dp_size` (Data Parallelism size - the number of HW instances the compiled model is replicated across and executed on in parallel) from the `vaiml_config` section of the VitisAI config JSON (the file referenced by `execution-provider-options.config-file` in the model config):
 
 ```json
 {
@@ -237,6 +237,8 @@ The application supports two batch size modes depending on how the ONNX model wa
 If `dp_size` is absent, the app falls back to `device_batch_size`. If neither field is present (or readable), the app defaults to batch size `1`.
 
 > **Note:** Raw video input (NV12 or BGR) is required for batch size > 1. JPEG input is single-frame only.
+
+> **Note on `--benchmark` output:** the `Inference` row of the `Performance` table is reported as `ms/inference` - the average latency of one `Session::Run()` call, without a dp_size annotation. For a **dynamic-batch** model that call processes the resolved `dp_size`/`device_batch_size` frames; for a **static-batch** model it processes the model's own fixed batch dimension, which is not guaranteed to equal `dp_size`. In either case the VitisAI EP may internally execute a `Session::Run()` call as more than one `dp_size`-wide parallel execution, so the reported time intentionally does not claim to be "one dp_size execution" - it is the per-call latency for whatever batch that call was given.
 
 ## Performance Timing
 
