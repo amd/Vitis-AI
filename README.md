@@ -7,9 +7,9 @@ http://www.apache.org/licenses/LICENSE-2.0.
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 -->
 
-# Vitis AI 6.2
+# Vitis AI 6.3
 
-Vitis AI is AMD's development stack for AI inference on AMD adaptive computing platforms. Release **6.2** supports two device series:
+Vitis AI is AMD's development stack for AI inference on AMD adaptive computing platforms. Release **6.3** supports two device series:
 
 - **AMD Versal AI Edge Series**
 - **AMD Versal AI Edge Series Gen 2**
@@ -43,6 +43,4 @@ Refer to the official [`Vitis AI documentation`](https://vitisai.docs.amd.com/) 
 
 ## License
 
-This project is licensed under the Apache License 2.0 — see [LICENSE](LICENSE)
-for details. Some files derived from third-party projects may carry different
-licenses — see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.txt) for attribution.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
