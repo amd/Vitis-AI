@@ -1,0 +1,210 @@
+{
+  "xclbin-location": "/run/media/mmcblk0p1/x_plus_ml.xclbin",
+  "preprocess-config": {
+    "mean-r": 123.675,
+    "mean-g": 116.28,
+    "mean-b": 103.53,
+    "scale-r": 0.01712,
+    "scale-g": 0.0175,
+    "scale-b": 0.0174,
+    "colour-format": "RGB",
+    "maintain-aspect-ratio": false,
+    "in-mem-bank" : 2,
+    "out-mem-banks" : [2, 3],
+    "_comment_out-mem-banks": "mem banks on which memory for postprocess output will be allocated"
+  },
+  "postprocess-config": {
+      "mem-banks" : [2, 3],
+      "_comment_mem-banks": "mem banks on which memory for postprocess input will be allocated",
+      "label-file-path": "/etc/vai/labels/ssdresnet34_labels.txt",
+      "type": "SSDRESNET34",
+      "image-width": 1200,
+      "image-height": 1200,
+      "ssd-param": {
+        "num-boxes": [
+          10000,
+          3750,
+          1014,
+          294,
+          36,
+          36
+        ],
+        "nms-threshold": 0.5,
+        "conf-threshold": 0.5,
+        "keep-top-k": 200,
+        "top-k": 200,
+        "prior-box-param": [
+        {
+          "layer-width": 50,
+          "layer-height": 50,
+          "variances": [
+            0.1,
+            0.1,
+            0.2,
+            0.2
+          ],
+          "min-sizes": [
+            84
+          ],
+          "max-sizes": [
+            180
+          ],
+          "aspect-ratios": [
+            2
+          ],
+          "offset": 0.5,
+          "step-width": 24,
+          "step-height": 24
+        },
+        {
+          "layer-width": 25,
+          "layer-height": 25,
+          "variances": [
+            0.1,
+            0.1,
+            0.2,
+            0.2
+          ],
+          "min-sizes": [
+            180
+          ],
+          "max-sizes": [
+            396
+          ],
+          "aspect-ratios": [
+            2,
+            3
+          ],
+          "offset": 0.5,
+          "step-width": 48,
+          "step-height": 48
+        },
+        {
+          "layer-width": 13,
+          "layer-height": 13,
+          "variances": [
+            0.1,
+            0.1,
+            0.2,
+            0.2
+          ],
+          "min-sizes": [
+            396
+          ],
+          "max-sizes": [
+            612
+          ],
+          "aspect-ratios": [
+            2,
+            3
+          ],
+          "offset": 0.5,
+          "step-width": 92,
+          "step-height": 92
+        },
+        {
+          "layer-width": 7,
+          "layer-height": 7,
+          "variances": [
+            0.1,
+            0.1,
+            0.2,
+            0.2
+          ],
+          "min-sizes": [
+            612
+          ],
+          "max-sizes": [
+            828
+          ],
+          "aspect-ratios": [
+            2,
+            3
+          ],
+          "offset": 0.5,
+          "step-width": 171,
+          "step-height": 171
+        },
+        {
+          "layer-width": 3,
+          "layer-height": 3,
+          "variances": [
+            0.1,
+            0.1,
+            0.2,
+            0.2
+          ],
+          "min-sizes": [
+            828
+          ],
+          "max-sizes": [
+            1044
+          ],
+          "aspect-ratios": [
+            2
+          ],
+          "offset": 0.5,
+          "step-width": 400,
+          "step-height": 400
+        },
+        {
+          "layer-width": 3,
+          "layer-height": 3,
+          "variances": [
+            0.1,
+            0.1,
+            0.2,
+            0.2
+          ],
+          "min-sizes": [
+            1044
+          ],
+          "max-sizes": [
+            1260
+          ],
+          "aspect-ratios": [
+            2
+          ],
+          "offset": 0.5,
+          "step-width": 400,
+          "step-height": 400
+        }
+      ]
+    }
+  },
+  "metaconvert-config": {
+    "display-level": -1,
+    "font-size": 0.5,
+    "font": 3,
+    "thickness": 2,
+    "radius": 5,
+    "mask-level": 0,
+    "y-offset": 0,
+    "draw-above-bbox-flag": true,
+    "label-filter": [
+      "class"
+    ],
+    "label-color": [
+      {
+        "level": 1,
+        "red": 0,
+        "green": 0,
+        "blue": 255
+      },
+      {
+        "level": 2,
+        "red": 0,
+        "green": 255,
+        "blue": 0
+      },
+      {
+        "level": 3,
+        "red": 255,
+        "green": 0,
+        "blue": 0
+      }
+    ],
+    "classes": [
+    ]
+  }
+}

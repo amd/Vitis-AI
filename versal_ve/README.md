@@ -1,17 +1,39 @@
-<!--
-Copyright (C) 2026 Advanced Micro Devices, Inc.
+# vitis-ai
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at
-http://www.apache.org/licenses/LICENSE-2.0.
+### Setup.
 
-Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
--->
+Clone the repo locally.
 
-# Vitis AI for Versal AI Edge Series
+Source the required tools (2026.1). What you source depends on the target platform:
 
-At time of the VAI 6.2 release, the **AMD Versal AI Edge Series** device series support and installation instructions are available at [`Vitis AI documentation`](https://vitisai.docs.amd.com/projects/gen1/en/latest/index.html). Going forward, this GitHub repository folder will contain:
+* **vek280 — AMD-EDF / Yocto flow (PetaLinux-free):** only the Vitis tools are needed.
+```
+source <path-to-installed-Vitis-2026.1>/settings64.sh
+```
 
-- Example applications (C++ and Python)
-- Tutorials
-- Reference designs for supported evaluation boards
-- Device-series-specific tools and utilities
+Download NPU IP from amd.com:
+```
+source npu_ip/settings.sh IP_NAME
+
+To get IP_NAME, run command source npu_ip/settings.sh LIST
+```
+
+### How to build
+
+```
+make -C versal_ve/reference_design/vek280 all
+```
+
+For more details refer user guide ug1703_vitis_ai_developer_guide_WtMkX.pdf.
+
+### What the vek280 build does (AMD-EDF flow)
+```
+0. Downloads the NPU IP from xilinx.com, and skips if already present.
+1. Builds the Vivado extensible XSA (hw/).
+2. Builds the AMD-EDF/Yocto SW via bitbake: device-tree, BOOT assets (u-boot/ATF), rootfs WIC, SDK.
+   (PetaLinux-free — no .bsp; boot artifacts come from the EDF yocto-manifests.)
+3. Vitis v++ link + package: overlay xclbin + EDF BOOT.BIN.
+4. Downloads the Vitis docker to generate the sample ResNet50 snapshot (skippable: SKIP_SNAPSHOT=1).
+5. Creates the "output" directory at versal_ve/reference_design/vek280 with the final binaries:
+   *_vitis_assembled.wic, x_plus_ml.xclbin, BOOT.BIN, version.txt, npu_*_utilization.rpt, sdk.sh.
+```

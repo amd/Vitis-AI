@@ -1,0 +1,3 @@
+part /run/media/mmcblk0p1 --source rootfs --change-directory=boot --fixed-size=512M --fstype=vfat --use-label --label boot --active --align 4
+part /                    --source rootfs --exclude-path=boot/   --fstype=ext4 --use-label --label root           --align 4
+bootloader --ptable msdos

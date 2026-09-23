@@ -1,0 +1,33 @@
+diff -u -r --exclude '*.cpython*' /usr/base_venv/lib/python3.12/site-packages/mxnet/numpy/utils.py ./numpy/utils.py
+--- /usr/base_venv/lib/python3.12/site-packages/mxnet/numpy/utils.py	2025-09-18 16:34:36.000000000 +0000
++++ mxnet/numpy/utils.py	2025-10-01 14:37:41.451586000 +0000
+@@ -33,8 +33,8 @@
+ int32 = onp.int32
+ int8 = onp.int8
+ int64 = onp.int64
+-bool_ = onp.bool_
+-bool = onp.bool
++bool_ = bool
++bool = bool
+ 
+ pi = onp.pi
+ inf = onp.inf
+diff -u -r --exclude '*.cpython*' /usr/base_venv/lib/python3.12/site-packages/mxnet/numpy_dispatch_protocol.py ./numpy_dispatch_protocol.py
+--- /usr/base_venv/lib/python3.12/site-packages/mxnet/numpy_dispatch_protocol.py	2025-09-18 16:34:36.000000000 +0000
++++ mxnet/numpy_dispatch_protocol.py	2025-10-01 14:47:27.405534000 +0000
+@@ -17,6 +17,7 @@
+ 
+ """Utils for registering NumPy array function protocol for mxnet.numpy ops."""
+ 
++import setuptools
+ import functools
+ import numpy as _np
+ from . import numpy as mx_np  # pylint: disable=reimported
+diff -u3 -r --exclude '*.pyc' /usr/base_venv/lib/python3.12/site-packages/thop/profile.py ./profile.py
+--- /usr/base_venv/lib/python3.12/site-packages/thop/profile.py	2025-09-18 16:33:26.000000000 +0000
++++ thop/profile.py	2025-10-08 16:40:58.072653000 +0000
+@@ -1,3 +1,4 @@
++import setuptools
+ from distutils.version import LooseVersion
+ 
+ from thop.vision.basic_hooks import *

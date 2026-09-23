@@ -1,0 +1,52 @@
+#! /bin/bash
+
+# Copyright (C) 2026 Advanced Micro Devices, Inc.
+
+# this script is a wrapper to install the aianalyzer tool
+
+which_ai()
+{
+  # prevent this own script from being found in the PATH
+  aianalyzer=$( which aianalyzer )
+  [ "$aianalyzer" = "" ] && return
+  [ $( realpath "$aianalyzer" ) = "$( realpath ${BASH_SOURCE[0]} )" ] && aianalyzer=""
+}
+
+install_aianalyzer()
+{
+  VITIS_HOME=$( cd $( dirname ${BASH_SOURCE[0]} ) ; cd .. ; pwd )
+
+  if [ "$MIPSO_DOCKER" ]
+  then
+    if [ ! -f $VITIS_HOME/.local.docker/lib/python3.12/site-packages/base_venv.pth ]
+    then
+      echo "Creating local.docker venv"
+      python3 -m venv $VITIS_HOME/.local.docker
+      echo /usr/base_venv/lib/python3.12/site-packages > $VITIS_HOME/.local.docker/lib/python3.12/site-packages/base_venv.pth
+    fi
+    . $VITIS_HOME/.local.docker/bin/activate
+  fi
+  aianalyzer=$( which aianalyzer )
+  [ "$aianalyzer" != "" ] && return
+
+  (
+    cd /tmp
+    if [ ! -f aianalyzer-1.7.0.-py3-none-any.whl ]
+    then
+      echo "Downloading aianalyzer"
+      $VITIS_HOME/bin/download.bash aianalyzer-1.7.0.-py3-none-any.whl || exit 1
+    fi
+    echo "Installing aianalyzer"
+    python3 -m pip install aianalyzer-1.7.0.-py3-none-any.whl || exit 1
+  ) || exit 1
+
+
+  which_ai
+}
+
+which_ai
+
+[ "$aianalyzer" = "" ] && install_aianalyzer
+
+[ "$aianalyzer" = "" ] && echo "ERROR while installing aianalyzer tool" && exit 1
+exec $aianalyzer "$@"

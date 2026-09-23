@@ -1,0 +1,5 @@
+# Copyright(C) 2023-2024 Advanced Micro Devices Inc.  All Rights Reserved.
+
+run.bash
+vaisw.dockerfile
+vaisw_execution.log

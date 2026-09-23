@@ -1,0 +1,48 @@
+{
+  "xclbin-location": "/run/media/mmcblk0p1/x_plus_ml.xclbin",
+  "use-native-output-format" : 2,
+  "_comment_use-native-output-format": "0: Non-Native format, 1: Native format without zero copy, 2: Native format with zero copy",
+  "exec-cpu-subgraph" : false,
+  "_comment_exec-cpu-subgraph": "true: CPU subgraph is executed on CPU, false: CPU subgraph is not executed",
+  "preprocess-config": {
+    "mean-r": 0,
+    "mean-g": 0,
+    "mean-b": 0,
+    "scale-r": 0.0039215,
+    "scale-g": 0.0039215,
+    "scale-b": 0.0039215,
+    "colour-format" : "RGBX",
+    "maintain-aspect-ratio" : true,
+    "resizing-type" : "PANSCAN",
+    "in-mem-bank" : 2,
+    "out-mem-banks" : [1, 2, 3],
+    "_comment_out-mem-banks": "mem banks on which memory for postprocess output will be allocated"
+  },
+  "postprocess-config": {
+      "mem-banks" : [1, 2, 3],
+      "_comment_mem-banks": "mem banks on which memory for postprocess input will be allocated",
+      "topk" : 1,
+      "disable-softmax" : true,
+      "_comment_disable-softmax": "true: softmax is not applied in postprocessing as it is part of the model, false: softmax is applied in postprocessing",
+      "label-file-path" : "/etc/vai/labels/resnet50_labels.txt",
+      "type" : "RESNET50"
+  },
+  "metaconvert-config":{
+    "display-level": -1,
+    "font-size" : 0.5,
+    "font" : 3,
+    "thickness" : 2,
+    "radius": 5,
+    "mask-level" : 0,
+    "y-offset" : 0,
+    "draw-above-bbox-flag" : true,
+    "label-filter" : [ "class"],
+    "label-color" : [
+      {"level": 1, "red" : 0, "green" : 255, "blue" : 0 },
+      {"level": 2, "red" : 0, "green" : 255, "blue" : 0 },
+      {"level": 3, "red" : 255, "green" : 0, "blue" : 0 }
+    ],
+    "classes" : [
+    ]
+  }
+}

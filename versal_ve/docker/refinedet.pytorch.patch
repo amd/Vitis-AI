@@ -1,0 +1,1148 @@
+diff --git a/demo/demo_simple.py b/demo/demo_simple.py
+index fd81af0e065984589aa9a9d85f8b53cc5111f90e..822bef2867d8b0a5938edd958f0204e84433a4f6 100644
+--- a/demo/demo_simple.py
++++ b/demo/demo_simple.py
+@@ -3,7 +3,7 @@
+ import os
+ import sys
+ 
+-root_path = os.path.abspath(os.path.join('..'))
++root_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) # refinedet.pytorch demo root directory
+ sys.path.append(root_path)
+ import _init_paths
+ import numpy as np
+@@ -16,85 +16,219 @@ from PIL import Image
+ import cv2
+ from libs.networks.vgg_refinedet import VGGRefineDet
+ from libs.networks.resnet_refinedet import ResNetRefineDet
+-from libs.utils.config import voc320, MEANS
++from libs.utils.config import voc320, voc512, coco320, coco512, MEANS
+ from libs.data_layers.transform import base_transform
+ from matplotlib import pyplot as plt
+ 
+ import pdb
+ 
++try:
++    import vaisw_import
++except ModuleNotFoundError as e:
++    if e.name != "vaisw_import":
++        raise e
++    vaisw_import = None
++
++import mipso_custom
++import argparse
++import time
++
+ is_gpu = False
+ if torch.cuda.is_available():
+     torch.set_default_tensor_type('torch.cuda.FloatTensor')
+     is_gpu = True
+ 
+ # for VOC
+-class_names = ['__background__',
++voc_classes = ['__background__',
+                'aeroplane', 'bicycle', 'bird', 'boat', 'bottle',
+                'bus', 'car', 'cat', 'chair', 'cow',
+                'diningtable', 'dog', 'horse', 'motorbike', 'person',
+                'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']
+-num_classes = len(class_names)
+ 
+-if __name__ == '__main__':
++coco_classes = ['__background__',
++                'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
++                'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
++                'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
++                'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle',
++                'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
++                'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed',
++                'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven',
++                'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
++
++parser = argparse.ArgumentParser(
++    description='RefineDet Demo With Pytorch')
++parser.add_argument('--source', type=str, default='000004.jpg',
++                    help='Source image/video')
++parser.add_argument('--batch_size', default=1, type=int,
++                    help='Batch size')
++parser.add_argument('--model_path', default=os.path.join(root_path, 'output/vgg16_refinedet320_voc_120000.pth'),
++                    type=str, help='Checkpoint state_dict file to test from')
++parser.add_argument('--cuda', action='store_true',
++                    help='Use CUDA to evaluate model')
++parser.add_argument('--loop', action='store_true',
++                    help='Looping on video')
++parser.add_argument('--out_file', type=str, default=None, required=False,
++                    help='output path for saving images/videos')
++
++def main():
++    args = parser.parse_args()
++    if not args.cuda and is_gpu:
++        args.cuda = True
++
+     # construct networks based on VGG16.
+-    cfg = voc320
+-    base_network = 'vgg16'
+-    model_path = '../output/vgg16_refinedet320_voc_120000.pth'
++    if 'voc' in args.model_path:
++        class_names = voc_classes
++        if '320' in args.model_path:
++            cfg = voc320
++            inputSize = 320
++            display_name = "VGG16 Refinedet 320x320"
++        else:
++            cfg = voc512
++            inputSize = 512
++            display_name = "VGG16 Refinedet 512x512"
++    else:
++        class_names = coco_classes
++        if '320' in args.model_path:
++            cfg = coco320
++            inputSize = 320
++            display_name = "Resnet101 Refinedet 320x320"
++        else:
++            cfg = coco512
++            inputSize = 512
++            display_name = "Resnet101 Refinedet 512x512"
++    base_network = 'vgg16' if 'vgg' in args.model_path else 'resnet101'
++    num_classes = len(class_names)
++
++
+     print('Construct {}_refinedet network.'.format(base_network))
+-    refinedet = VGGRefineDet(cfg['num_classes'], cfg)
++    if base_network == 'vgg16':
++        refinedet = VGGRefineDet(cfg['num_classes'], cfg)
++    elif base_network == 'resnet101':
++        refinedet = ResNetRefineDet(cfg['num_classes'], cfg)
+     refinedet.create_architecture()
+-    # for CPU
++    # For CPU
+     net = refinedet
+-    # for GPU
+-    if is_gpu:
++    # For GPU/GPUs
++    if args.cuda:
+         net = refinedet.cuda()
+-        cudnn.benchmark = True
+-    # load weights
+-    net.load_weights(model_path)
++        #cudnn.benchmark = True
++    # Load weights
++    mpath = os.path.join(root_path, args.model_path)
++    net.load_weights(mpath)
+     net.eval()
+ 
++    batchSize = args.batch_size
++    cam = mipso_custom.mipso_opencv_capture(args.source)
++    if len(cam) > 1:
++        batchSize = len(cam)
++
++    firstShow = True
++
++    if args.out_file:
++        as_imgs = os.path.isdir(args.source) or args.source.split(".")[-1].lower() in ["jpg", "png", "gif", "jpeg", "bmp"]
++        if os.path.isdir(args.out_file):
++            output = mipso_custom.MipsoSaver(args.out_file, as_images=as_imgs)
++        else:
++            out_dir, out_filename = os.path.split(args.out_file)
++            out_dir = "." if not out_dir else out_dir
++            output = mipso_custom.MipsoSaver(out_dir, video_filename=out_filename, as_images=as_imgs)
++
++    batch_data = []
++    capture_image = []
+ 
+-    # image
+-    img_path = '000004.jpg'
+-    image = cv2.imread(img_path, cv2.IMREAD_COLOR)
+-
+-    # preprocess
+-    # norm_image = base_transform(image, (320, 320), MEANS)
+-    norm_image = cv2.resize(image, (320, 320)).astype(np.float32)
+-    norm_image -= MEANS
+-    norm_image = norm_image.astype(np.float32)
+-    norm_image = torch.from_numpy(norm_image).permute(2, 0, 1)
+-
+-    # forward
+-    input_var = Variable(norm_image.unsqueeze(0))  # wrap tensor in Variable
+-    if torch.cuda.is_available():
+-        input_var = input_var.cuda()
+-    detection = net(input_var)
+-
+-
+-    # scale each detection back up to the image,
+-    # scale = (width, height, width, height)
+-    scale = torch.Tensor(image.shape[1::-1]).repeat(2)
+-    threshold = 0.5
+-    num_top = detection.size(2)
+-    colors = (plt.cm.hsv(np.linspace(0, 1, num_classes)) * 255).tolist()
+-    for i in range(1, num_classes):
+-        for j in range(num_top):
+-            score = detection[0, i, j, 0]
+-            if score < threshold:
++    while len(cam) > 0:
++        for video in cam:
++            path, im0 = video.read()
++            if not path:
++                if args.loop:
++                    video.set(cv2.CAP_PROP_POS_FRAMES, 0)
++                    path, frame = video.read()
++                else:
++                    cam = []
++
++            if not (im0 is None or im0.size == 0):
++                capture_image.append((path, im0))
++
++                # Pre-process
++                norm_image = cv2.resize(im0, (inputSize, inputSize)).astype(np.float32)
++                norm_image -= MEANS
++                norm_image = norm_image.astype(np.float32)
++                norm_image = torch.from_numpy(norm_image).permute(2, 0, 1)
++
++                batch_data.append(norm_image)
++
++        if len(batch_data) < batchSize:
++            if len(cam) > 0:
+                 continue
+-            label_name = class_names[i]
+-            display_txt = '%s: %.2f' % (label_name, score)
+-            pts = (detection[0, i, j, 1:] * scale).cpu().numpy().astype(np.int32)
+-            pts = tuple(pts)
+-            cv2.rectangle(image, pts[:2], pts[2:], colors[i], 2)
+-            cv2.putText(image, display_txt,
+-                pts[:2],
+-                cv2.FONT_HERSHEY_COMPLEX_SMALL,
+-                0.8, colors[i])
+-    # pdb.set_trace()
+-    name, ext = os.path.splitext(img_path)
+-    cv2.imwrite(name + '_result' + ext, image)
++            elif len(batch_data) == 0:
++                break
++
++        t0 = time.time()
++        batch_data = torch.stack(batch_data)
++        input_var = Variable(batch_data)
++        if torch.cuda.is_available():
++            input_var = input_var.cuda()
+ 
++        if os.environ.get("VAISW_WORKAROUND_REMOVE_DETECT"):
++            outputs = net(input_var)
++            if is_gpu:
++                outputs = [out.cuda() for out in outputs]
++            arm_predictions, odm_predictions = outputs[:2], outputs[2:]
++            if vaisw_import:
++                with vaisw_import.disable_wrap():
++                    detection = net.calc_result(arm_predictions, odm_predictions)
++            else:
++                detection = net.calc_result(arm_predictions, odm_predictions)
++        else:
++            detection = net(input_var)
++        t1 = time.time()
+ 
++        # scale each detection back up to the image,
++        # scale = (width, height, width, height)
++        threshold = 0.5
++        num_top = detection.size(2)
++        colors = (plt.cm.hsv(np.linspace(0, 1, num_classes)) * 255).tolist()
++        for idx, det in enumerate(detection):
++            path, image = capture_image[idx]
++            scale = torch.Tensor(image.shape[1::-1]).repeat(2)
++            for i in range(1, num_classes):
++                for j in range(num_top):
++                    score = det[i, j, 0]
++                    if score < threshold:
++                        continue
++                    label_name = class_names[i]
++                    display_txt = '%s: %.2f' % (label_name, score)
++                    pts = (det[i, j, 1:] * scale).cpu().numpy().astype(np.int32)
++                    pts = tuple(pts)
++                    cv2.rectangle(image, pts[:2], pts[2:], colors[i], 2)
++                    cv2.putText(image, display_txt,
++                        pts[:2],
++                        cv2.FONT_HERSHEY_COMPLEX_SMALL,
++                        0.8, colors[i])
++            # pdb.set_trace()
++            if args.out_file:
++                output.add(image)
++            else:
++                if firstShow:
++                    mipso_custom.mipso_window_init(idx, image.shape[1], image.shape[0])
++                mipso_custom.mipso_window_info(image, idx, display_name, t1-t0)
++                cv2.imshow(str(idx), image)
+ 
++        if not args.out_file:
++            choice = cv2.waitKey(1)  # 1 millisecond
++            choice = mipso_custom.mipso_process_key(choice)
++            if choice == 27:
++                break
++
++        capture_image = []
++        batch_data = []
++        firstShow = False
++
++    if args.out_file:
++        print("No more input, encoding capture...")
++        output.save()
++
++    cv2.destroyAllWindows()
++
++if __name__ == '__main__':
++    main()
+diff --git a/eval_refinedet.py b/eval_refinedet.py
+index 1666d53f923ce446f8e33782444c03046e31437d..119e68ca98ca79c1097a30416987bdd08f36eae0 100644
+--- a/eval_refinedet.py
++++ b/eval_refinedet.py
+@@ -22,6 +22,13 @@ from libs.data_layers.blob_dataset import BlobDataset
+ 
+ import pdb
+ 
++try:
++    import vaisw_import
++except ModuleNotFoundError as e:
++    if e.name != "vaisw_import":
++        raise e
++    vaisw_import = None
++
+ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+ 
+ class Timer(object):
+@@ -68,6 +75,10 @@ parser.add_argument('--result_path', default='./detection_output', type=str,
+                     help='Path to store detection results in evaluation')
+ parser.add_argument('--cuda', default=True, type=str2bool,
+                     help='Use CUDA to evaluate model')
++parser.add_argument('--nb_imgs', default=None, type=int,
++                    help='Number of images for eval')
++parser.add_argument('--threshold', default=None, type=float,
++                    help='mAP threshold')
+ args = parser.parse_args()
+ 
+ 
+@@ -86,7 +97,7 @@ def eval_net():
+         args.imdbval_name = "voc_2007_test"
+     elif args.dataset == "coco":
+         args.imdb_name = "coco_2014_train+coco_2014_valminusminival"
+-        args.imdbval_name = "coco_2014_minival"
++        args.imdbval_name = "coco_2014_val"
+     # Import config
+     if args.dataset == 'coco':
+         cfg = (coco320, coco512)[args.input_size==512]
+@@ -94,7 +105,7 @@ def eval_net():
+         cfg = (voc320, voc512)[args.input_size==512]
+     # Create imdb, roidb and blob_dataset
+     print('Create or load an evaluted imdb.')
+-    imdb, roidb = combined_roidb(args.imdbval_name, False)
++    imdb, roidb = combined_roidb(args.imdbval_name, False, nb_imgs=args.nb_imgs)
+     imdb.competition_mode(on=True)
+     print('{:d} roidb entries'.format(len(roidb)))
+     blob_dataset = BlobDataset(
+@@ -141,7 +152,16 @@ def eval_net():
+             input = input.cuda()
+         # timers forward
+         _t['im_detect'].tic()
+-        detection = net(input)
++        if os.environ.get("VAISW_WORKAROUND_REMOVE_DETECT"):
++            outputs = net(input)
++            arm_predictions, odm_predictions = outputs[:2], outputs[2:]
++            if vaisw_import:
++                with vaisw_import.disable_wrap():
++                    detection = net.calc_result(arm_predictions, odm_predictions)
++            else:
++                detection = net.calc_result(arm_predictions, odm_predictions)
++        else:
++            detection = net(input)
+         detect_time = _t['im_detect'].toc(average=True)
+         print('im_detect: {:d}/{:d} {:.3f}s'.format(
+             idx + 1, num_images, detect_time))
+@@ -168,7 +188,7 @@ def eval_net():
+         pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
+ 
+     print('Evaluating detections')
+-    imdb.evaluate_detections(all_boxes, output_dir)
++    imdb.evaluate_detections(all_boxes, output_dir, args.threshold)
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/libs/data_layers/roidb.py b/libs/data_layers/roidb.py
+index f122de5e4d1d09e0edcbd942c3ddfb2d4d0720d2..7e3d6363f5c3139f24438319d5632b9ffa9a3813 100644
+--- a/libs/data_layers/roidb.py
++++ b/libs/data_layers/roidb.py
+@@ -28,7 +28,7 @@ def prepare_roidb(imdb):
+     if not (imdb.name.startswith('coco')):
+         sizes = [Image.open(imdb.image_path_at(i)).size
+                  for i in range(imdb.num_images)]
+-    
++
+     for i in range(len(imdb.image_index)):
+         roidb[i]['img_id'] = imdb.image_id_at(i)
+         roidb[i]['image'] = imdb.image_path_at(i)
+@@ -66,7 +66,7 @@ def filter_roidb(roidb):
+     return roidb
+ 
+ 
+-def combined_roidb(imdb_names, training=True):
++def combined_roidb(imdb_names, training=True, nb_imgs=None):
+     """
+     Combine multiple roidbs
+     """
+@@ -82,7 +82,7 @@ def combined_roidb(imdb_names, training=True):
+         return imdb.roidb
+     
+     def get_roidb(imdb_name):
+-        imdb = get_imdb(imdb_name)
++        imdb = get_imdb(imdb_name, nb_imgs=nb_imgs)
+         print('Loaded dataset `{:s}` for training'.format(imdb.name))
+         roidb = get_training_roidb(imdb)
+         return roidb
+@@ -93,10 +93,10 @@ def combined_roidb(imdb_names, training=True):
+     if len(roidbs) > 1:
+         for r in roidbs[1:]:
+             roidb.extend(r)
+-        tmp = get_imdb(imdb_names.split('+')[1])
++        tmp = get_imdb(imdb_names.split('+')[1], nb_imgs=nb_imgs)
+         imdb = datasets.imdb.imdb(imdb_names, tmp.classes)
+     else:
+-        imdb = get_imdb(imdb_names)
++        imdb = get_imdb(imdb_names, nb_imgs=nb_imgs)
+     
+     if training:
+         roidb = filter_roidb(roidb)
+diff --git a/libs/datasets/coco.py b/libs/datasets/coco.py
+index a8e08ab669463a8a0c5d0f5069fe7f75de6ddb9f..f87a82f086cb7044e1f9c9a226287be3bfecc8e8 100644
+--- a/libs/datasets/coco.py
++++ b/libs/datasets/coco.py
+@@ -30,12 +30,13 @@ from pycocotools import mask as COCOmask
+ 
+ 
+ class coco(imdb):
+-  def __init__(self, image_set, year):
++  def __init__(self, image_set, year, nb_imgs=None):
+     imdb.__init__(self, 'coco_' + year + '_' + image_set)
+     # COCO specific config options
+     self.config = {'use_salt': True,
+                    'cleanup': True}
+     # name, paths
++    self.nb_imgs = nb_imgs
+     self._year = year
+     self._image_set = image_set
+     self._data_path = osp.join(cfg.DATA_DIR, 'coco')
+@@ -80,7 +81,7 @@ class coco(imdb):
+     """
+     Load image ids.
+     """
+-    image_ids = self._COCO.getImgIds()
++    image_ids = self._COCO.getImgIds()[:self.nb_imgs] if self.nb_imgs else self._COCO.getImgIds()
+     return image_ids
+ 
+   def _get_widths(self):
+@@ -256,11 +257,12 @@ class coco(imdb):
+     print('~~~~ Summary metrics ~~~~')
+     coco_eval.summarize()
+ 
+-  def _do_detection_eval(self, res_file, output_dir):
++  def _do_detection_eval(self, res_file, output_dir, threshold):
+     ann_type = 'bbox'
+     coco_dt = self._COCO.loadRes(res_file)
+     coco_eval = COCOeval(self._COCO, coco_dt)
+     coco_eval.params.useSegm = (ann_type == 'segm')
++    coco_eval.params.imgIds = self.image_index
+     coco_eval.evaluate()
+     coco_eval.accumulate()
+     self._print_detection_eval_metrics(coco_eval)
+@@ -269,6 +271,13 @@ class coco(imdb):
+       pickle.dump(coco_eval, fid, pickle.HIGHEST_PROTOCOL)
+     print('Wrote COCO eval results to: {}'.format(eval_file))
+ 
++    if threshold:
++      map50 = coco_eval.stats[1]
++      if map50 >= threshold:
++        print("\033[92m[SUCCESS]\033[0m mAP50 %.3f >= %.3f (threshold)" % (map50, threshold))
++      else:
++        sys.exit("\033[91m[FAIL]\033[0m mAP50 %.3f < %.3f (threshold)" % (map50, threshold))
++
+   def _coco_results_one_category(self, boxes, cat_id):
+     results = []
+     for im_ind, index in enumerate(self.image_index):
+@@ -305,7 +314,7 @@ class coco(imdb):
+     with open(res_file, 'w') as fid:
+       json.dump(results, fid)
+ 
+-  def evaluate_detections(self, all_boxes, output_dir):
++  def evaluate_detections(self, all_boxes, output_dir, threshold=None):
+     res_file = osp.join(output_dir, ('detections_' +
+                                      self._image_set +
+                                      self._year +
+@@ -316,7 +325,7 @@ class coco(imdb):
+     self._write_coco_results_file(all_boxes, res_file)
+     # Only do evaluation on non-test sets
+     if self._image_set.find('test') == -1:
+-      self._do_detection_eval(res_file, output_dir)
++      self._do_detection_eval(res_file, output_dir, threshold)
+     # Optionally cleanup results json file
+     if self.config['cleanup']:
+       os.remove(res_file)
+diff --git a/libs/datasets/factory.py b/libs/datasets/factory.py
+index 99d0507c5dbe14662d561d019e3eca7894e452d5..3d058682b9697b28714bb6690d54425095425acc 100644
+--- a/libs/datasets/factory.py
++++ b/libs/datasets/factory.py
+@@ -26,25 +26,25 @@ import numpy as np
+ for year in ['2007', '2012']:
+   for split in ['train', 'val', 'trainval', 'test']:
+     name = 'voc_{}_{}'.format(year, split)
+-    __sets[name] = (lambda split=split, year=year: pascal_voc(split, year))
++    __sets[name] = (lambda split=split, year=year, nb_imgs=None: pascal_voc(split, year, nb_imgs=nb_imgs))
+ 
+ # Set up coco_2014_<split>
+ for year in ['2014']:
+   for split in ['train', 'val', 'minival', 'valminusminival', 'trainval']:
+     name = 'coco_{}_{}'.format(year, split)
+-    __sets[name] = (lambda split=split, year=year: coco(split, year))
++    __sets[name] = (lambda split=split, year=year, nb_imgs=None: coco(split, year, nb_imgs))
+ 
+ # Set up coco_2014_cap_<split>
+ for year in ['2014']:
+   for split in ['train', 'val', 'capval', 'valminuscapval', 'trainval']:
+     name = 'coco_{}_{}'.format(year, split)
+-    __sets[name] = (lambda split=split, year=year: coco(split, year))
++    __sets[name] = (lambda split=split, year=year, nb_imgs=None: coco(split, year, nb_imgs))
+ 
+ # Set up coco_2015_<split>
+ for year in ['2015']:
+   for split in ['test', 'test-dev']:
+     name = 'coco_{}_{}'.format(year, split)
+-    __sets[name] = (lambda split=split, year=year: coco(split, year))
++    __sets[name] = (lambda split=split, year=year, nb_imgs=None: coco(split, year, nb_imgs))
+ 
+ # Set up vg_<split>
+ # for version in ['1600-400-20']:
+@@ -63,11 +63,11 @@ for split in ['train', 'val', 'val1', 'val2', 'test']:
+     data_path = 'data/imagenet/ILSVRC'
+     __sets[name] = (lambda split=split, devkit_path=devkit_path, data_path=data_path: imagenet(split,devkit_path,data_path))
+ 
+-def get_imdb(name):
++def get_imdb(name, nb_imgs=None):
+   """Get an imdb (image database) by name."""
+   if name not in __sets:
+     raise KeyError('Unknown dataset: {}'.format(name))
+-  return __sets[name]()
++  return __sets[name](nb_imgs=nb_imgs)
+ 
+ 
+ def list_imdbs():
+diff --git a/libs/datasets/imdb.py b/libs/datasets/imdb.py
+index cbae3607635f886c61b001c3710251e11183b710..bc55bc22f931e56ff90d51f665e0ed980741f22c 100644
+--- a/libs/datasets/imdb.py
++++ b/libs/datasets/imdb.py
+@@ -95,7 +95,7 @@ class imdb(object):
+   def default_roidb(self):
+     raise NotImplementedError
+ 
+-  def evaluate_detections(self, all_boxes, output_dir=None):
++  def evaluate_detections(self, all_boxes, output_dir=None, threshold=None):
+     """
+     all_boxes is a list of length number-of-classes.
+     Each list element is a list of length number-of-images.
+diff --git a/libs/datasets/pascal_voc.py b/libs/datasets/pascal_voc.py
+index d37726b10a66193ac12040b36531facbd19c1814..8307e4167454a93ade875048c3c1d5ae5f0f5f3a 100644
+--- a/libs/datasets/pascal_voc.py
++++ b/libs/datasets/pascal_voc.py
+@@ -10,6 +10,7 @@ from __future__ import absolute_import
+ import xml.dom.minidom as minidom
+ 
+ import os
++import sys
+ import numpy as np
+ import scipy.sparse
+ import subprocess
+@@ -36,9 +37,10 @@ except NameError:
+ 
+ 
+ class pascal_voc(imdb):
+-    def __init__(self, image_set, year, devkit_path=None):
++    def __init__(self, image_set, year, devkit_path=None, nb_imgs=None):
+         imdb.__init__(self, 'voc_' + year + '_' + image_set)
+         self._year = year
++        self.nb_imgs = nb_imgs
+         self._image_set = image_set
+         self._devkit_path = self._get_default_path() if devkit_path is None \
+             else devkit_path
+@@ -105,6 +107,8 @@ class pascal_voc(imdb):
+             'Path does not exist: {}'.format(image_set_file)
+         with open(image_set_file) as f:
+             image_index = [x.strip() for x in f.readlines()]
++        if self.nb_imgs:
++            image_index = image_index[:self.nb_imgs]
+         return image_index
+ 
+     def _get_default_path(self):
+@@ -285,7 +289,7 @@ class pascal_voc(imdb):
+                                        dets[k, 0] + 1, dets[k, 1] + 1,
+                                        dets[k, 2] + 1, dets[k, 3] + 1))
+ 
+-    def _do_python_eval(self, output_dir='output'):
++    def _do_python_eval(self, output_dir='output', threshold=None):
+         annopath = os.path.join(
+             self._devkit_path,
+             'VOC' + self._year,
+@@ -309,7 +313,7 @@ class pascal_voc(imdb):
+                 continue
+             filename = self._get_voc_results_file_template().format(cls)
+             rec, prec, ap = voc_eval(
+-                filename, annopath, imagesetfile, cls, cachedir, ovthresh=0.5,
++                filename, annopath, imagesetfile, cls, cachedir, self.num_images, ovthresh=0.5,
+                 use_07_metric=use_07_metric)
+             aps += [ap]
+             print('AP for {} = {:.4f}'.format(cls, ap))
+@@ -330,6 +334,13 @@ class pascal_voc(imdb):
+         print('-- Thanks, The Management')
+         print('--------------------------------------------------------------')
+ 
++        if threshold:
++            map50 = np.mean(aps)
++            if map50 >= threshold:
++                print("\033[92m[SUCCESS]\033[0m mAP50 %.3f >= %.3f (threshold)" % (map50, threshold))
++            else:
++                sys.exit("\033[91m[FAIL]\033[0m mAP50 %.3f < %.3f (threshold)" % (map50, threshold))
++
+     def _do_matlab_eval(self, output_dir='output'):
+         print('-----------------------------------------------------')
+         print('Computing results with the official MATLAB eval code.')
+@@ -345,9 +356,9 @@ class pascal_voc(imdb):
+         print('Running:\n{}'.format(cmd))
+         status = subprocess.call(cmd, shell=True)
+ 
+-    def evaluate_detections(self, all_boxes, output_dir):
++    def evaluate_detections(self, all_boxes, output_dir, threshold=None):
+         self._write_voc_results_file(all_boxes)
+-        self._do_python_eval(output_dir)
++        self._do_python_eval(output_dir, threshold)
+         if self.config['matlab_eval']:
+             self._do_matlab_eval(output_dir)
+         if self.config['cleanup']:
+diff --git a/libs/datasets/voc_eval.py b/libs/datasets/voc_eval.py
+index 35c00596f96319b666fa1d2a4f3dc08e6af237a7..83e0c67ebe5828a508e4391534c349d728c452e6 100644
+--- a/libs/datasets/voc_eval.py
++++ b/libs/datasets/voc_eval.py
+@@ -71,6 +71,7 @@ def voc_eval(detpath,
+              imagesetfile,
+              classname,
+              cachedir,
++             nb_imgs,
+              ovthresh=0.5,
+              use_07_metric=False):
+   """rec, prec, ap = voc_eval(detpath,
+@@ -105,7 +106,7 @@ def voc_eval(detpath,
+   # read list of images
+   with open(imagesetfile, 'r') as f:
+     lines = f.readlines()
+-  imagenames = [x.strip() for x in lines]
++  imagenames = [x.strip() for x in lines][:nb_imgs]
+ 
+   if not os.path.isfile(cachefile):
+     # load annotations
+diff --git a/libs/networks/refinedet.py b/libs/networks/refinedet.py
+index 420bbf853905778fe6afe9969ad038c7b39750f7..09acc0c0559f6ef738a7210f85377c64f803b55a 100644
+--- a/libs/networks/refinedet.py
++++ b/libs/networks/refinedet.py
+@@ -124,7 +124,7 @@ class RefineDet(nn.Module):
+         :param model_path: model path.
+         :return:
+         """
+-        self.load_state_dict(torch.load(model_path))
++        self.load_state_dict(torch.load(model_path, map_location='cpu'))
+         
+     def forward(self, x, targets=None):
+         """
+@@ -153,10 +153,17 @@ class RefineDet(nn.Module):
+         # Predictions of two heads
+         self.arm_predictions = tuple(self._forward_arm_head(forward_features))
+         self.odm_predictions = tuple(self._forward_odm_head(pyramid_features))
++
++        if os.environ.get("VAISW_WORKAROUND_REMOVE_DETECT"):
++            return [*self.arm_predictions, *self.odm_predictions]
++        else:
++            return self.calc_result(self.arm_predictions, self.odm_predictions)
++
++    def calc_result(self, arm_predictions, odm_predictions):
+         # Refine anchores and get ignore flags for refined anchores using self.arm_predictions
+-        self._refine_arm_anchors(self.arm_predictions)
++        self._refine_arm_anchors(arm_predictions)
+         if not self.training:
+-            return self.detect_layer(self.odm_predictions,
++            return self.detect_layer(odm_predictions,
+                                      self.refined_anchors,
+                                      self.ignore_flags_refined_anchor)
+         elif targets is not None:
+diff --git a/mipso_custom.py b/mipso_custom.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3baaec85989aa157d96b77501df0301ac54198a0
+--- /dev/null
++++ b/mipso_custom.py
+@@ -0,0 +1,436 @@
++
++# ===========================================================
++# Copyright(C) 2023-2024 Advanced Micro Devices Inc.  All Rights Reserved.
++# ===========================================================
++
++from collections import deque
++from threading import Thread
++import cv2
++import os
++
++import numpy as np
++import PIL
++############################################################
++############################################################
++
++# the application will open several window and place them on the desktop at
++# specific location. The below variables allow to configure the location
++
++# this is the X/Y offset for window position
++WINDOW_X_OFFSET         = int(os.environ.get("WINDOW_X_OFFSET")         or 0)
++WINDOW_Y_OFFSET         = int(os.environ.get("WINDOW_Y_OFFSET")         or 0)
++
++# this is the number of window per row
++WINDOW_PER_ROW          = int(os.environ.get("WINDOW_PER_ROW")          or 3)
++
++# this is a scaling factor to reduce the window dimension (2: window will be 2x smaller)
++WINDOW_RATIO            = float(os.environ.get("WINDOW_RATIO")          or 1)
++
++# this force the width and height of the video
++WINDOW_WIDTH            = int(os.environ.get("WINDOW_WIDTH")            or 0)
++WINDOW_HEIGHT           = int(os.environ.get("WINDOW_HEIGHT")           or 0)
++
++# this is the index position to place a window so a slide can be displayed. For instance, in a 3x3 configuration use 4 to let the center empty
++WINDOW_SLIDE_IDX        = int(os.environ.get("WINDOW_SLIDE_IDX")        or 4)
++
++# this is the number of batch (usually the number of cores) per system
++BATCH_PER_SYSTEM        = int(os.environ.get("BATCH_PER_SYSTEM")        or 1)
++
++# this is the number of system per board
++SYSTEM_PER_BOARD        = int(os.environ.get("SYSTEM_PER_BOARD")        or 2)
++
++# show info/FPS by default
++SHOW_INFO               = int(os.environ.get("SHOW_INFO")               or 0)
++SHOW_FPS                = int(os.environ.get("SHOW_FPS")                or 0)
++
++
++# enable the MJPG mode
++OPENCV_CAMERA_MJPG      = int(os.environ.get("OPENCV_CAMERA_MJPG")      or 1)
++# force camera width/height
++OPENCV_CAMERA_WIDTH     = int(os.environ.get("OPENCV_CAMERA_WIDTH")     or 0)
++OPENCV_CAMERA_HEIGHT    = int(os.environ.get("OPENCV_CAMERA_HEIGHT")    or 0)
++
++
++############################################################
++############################################################
++
++# only for YoloV2:
++def mipso_get_interpolation():
++    return cv2.INTER_NEAREST
++    return cv2.INTER_LINEAR
++    #return cv2.INTER_LANCZOS4
++
++# only for YoloV2
++def mipso_camera_reduce_delay():
++    return False # normal execution: capture / inference / display from capture
++    return True # reduce delay execution: inference on prev capture / capture / display from capture using previous inference
++
++# only for YoloV2
++def mipso_box_rounding(i):
++    return i
++    round = 20
++    return ((i + round) // (2*round) ) * 2*round
++
++def mipso_camera_init(c):
++    print ("Initial camera resolution {}x{} @ {}".format(
++        c.get(cv2.CAP_PROP_FRAME_WIDTH),
++        c.get(cv2.CAP_PROP_FRAME_HEIGHT),
++        c.get(cv2.CAP_PROP_FPS)))
++    if OPENCV_CAMERA_WIDTH != 0:
++        c.set(cv2.CAP_PROP_FRAME_WIDTH , OPENCV_CAMERA_WIDTH)
++    if OPENCV_CAMERA_HEIGHT != 0:
++        c.set(cv2.CAP_PROP_FRAME_HEIGHT , OPENCV_CAMERA_HEIGHT)
++    if OPENCV_CAMERA_MJPG != 0:
++        c.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
++    print ("Using camera resolution {}x{} @ {}".format(
++        c.get(cv2.CAP_PROP_FRAME_WIDTH),
++        c.get(cv2.CAP_PROP_FRAME_HEIGHT),
++        c.get(cv2.CAP_PROP_FPS)))
++
++def mipso_window_init(idx, width, height):
++    cv2.namedWindow(str(idx), cv2.WINDOW_GUI_NORMAL | cv2.WINDOW_FREERATIO)
++    #cv2.namedWindow(str(idx), cv2.WINDOW_NORMAL)
++
++    if WINDOW_WIDTH != 0 and WINDOW_HEIGHT != 0:
++        cur_width = WINDOW_WIDTH
++        cur_height = WINDOW_HEIGHT
++    else:
++        cur_width = int(width // WINDOW_RATIO)
++        cur_height = int(height // WINDOW_RATIO)
++
++    cv2.resizeWindow(str(idx), (cur_width, cur_height))
++    board=0
++    system=0
++    core=0
++    if 'VAISW_RUNSESSION_ENABLECORES' in os.environ and os.environ['VAISW_RUNSESSION_ENABLECORES'].startswith('B'):
++        c = os.environ['VAISW_RUNSESSION_ENABLECORES'].split(':')[0].split('_')
++        if len(c[0]) > 0:
++            board = int(c[0][1:])
++        if len(c) > 1:
++            system = int(c[1][1:])
++        if len(c) > 2:
++            core = int(c[2][1:])
++
++    cur_idx = idx + core + BATCH_PER_SYSTEM * ( system + SYSTEM_PER_BOARD * board)
++    # in case we want to put slide somewhere
++    if cur_idx >= WINDOW_SLIDE_IDX:
++        cur_idx = cur_idx + 1
++    pos_x = WINDOW_X_OFFSET + int( (cur_idx % WINDOW_PER_ROW)*cur_width)
++    pos_y = WINDOW_Y_OFFSET + int( 0 + (cur_idx // WINDOW_PER_ROW)*cur_height)
++
++    print("Move window {} {}x{} for system {} @ ({} , {})".format(idx, cur_width, cur_height, system, pos_x, pos_y))
++    cv2.moveWindow(str(idx), pos_x, pos_y)
++
++def mipso_parse_input(file):
++    mode='file'
++    for part in file.split(':'):
++        if 'camera' == part:
++            mode='camera'
++            continue
++        if part.startswith('http'):
++            mode=part
++            continue
++        if part.isdigit():
++            yield mode, int(part)
++        elif mode.startswith('http'):
++            yield 'http', mode + ':' + part
++            mode='file'
++        else:
++            mode='file'
++            yield mode, part
++
++
++class captureDirectory(object):
++    def __init__(self, path):
++        self.path = path
++        self.l = iter([os.path.join(self.path, x) for x in sorted(os.listdir(self.path))])
++
++    def isOpened(self):
++        return os.path.isdir(self.path)
++    def get(self, prop):
++        # only return the FPS
++        return 1
++    def read(self):
++        try:
++            i = next(self.l)
++        except StopIteration:
++            return False, None
++        return i, cv2.imread(i)
++
++class liveCapture(object):
++    def __init__(self,src):
++        self.stop = False
++        self.status = False
++        self.frames = deque([])
++        self.capture = cv2.VideoCapture(src)
++        #self.capture.set(cv2.CAP_PROP_BUFFERSIZE,2)
++        self.FPS = self.capture.get(cv2.CAP_PROP_FPS)
++        self.thread1 = Thread(target = self.bg_read, args=())
++        self.thread1.daemon = True
++        self.thread1.start()
++        self.readFps = 1
++    def bg_read(self):
++        while not self.stop:
++            if self.capture.isOpened():
++                self.status, frame = self.capture.read()
++                if self.status:
++                    self.frames.append(frame)
++    def isOpened(self):
++        return self.capture.isOpened()
++    def read(self):
++        # do a kind of adaptative fast forward with input buffer of 200 images
++        l = len(self.frames)
++        if l > 200:
++            self.readFps = 1 << ((l//100)-1)
++        elif l < 200:
++            self.readFps = 1
++        if len(self.frames) > 0:
++            f = self.frames[0]
++            for _ in range(int(self.readFps)):
++                # keep always 1 frame in the buffer
++                if len(self.frames) == 1:
++                    break
++                self.frames.popleft()
++            return True, f
++        else:
++            return False, None
++    def get(self, prop):
++        # only return the FPS
++        return int(self.FPS)
++    def __del__(self):
++        self.stop = True
++        self.thread1.join()
++
++
++def mipso_opencv_capture(file):
++    """
++    return a list of opencv capture device
++    """
++    camera = []
++    # TODO: use a better handling of the different mode (class)
++    if 'camera' == file:
++        # open all camera
++        camera_idx=0
++        while True:
++            c = cv2.VideoCapture(camera_idx)
++            if c.isOpened() == False:
++                break
++            camera.append(c)
++            mipso_camera_init(c)
++            camera_idx = camera_idx + 1
++    else:
++        for mode, url in mipso_parse_input(file):
++            if mode.startswith('http') and 'youtube' in url:
++                import pafy
++                option = url.split('@')
++                v = pafy.new(option[0])
++                resolution = [s.resolution for s in v.allstreams]
++                if option[-1] == 'list':
++                    print(f'Available resolution for {option[0]} are:')
++                    print('\n'.join(resolution))
++                    exit(0)
++                elif option[-1] in resolution:
++                    url = v.allstreams[resolution.index(option[-1])].url
++                else:
++                    url = v.getbest().url
++                if 'live' in option:
++                    c = liveCapture(url)
++                else:
++                    c = cv2.VideoCapture(url)
++            elif os.path.isdir(url):
++                c = captureDirectory(url)
++            else:
++                c = cv2.VideoCapture(url)
++            if c.isOpened() == False:
++                print("Error opening source {} {}".format(mode, url))
++                break
++            if mode == 'camera':
++                mipso_camera_init(c)
++            camera.append(c)
++
++    assert len(camera) > 0, 'Cannot capture source'
++    return camera
++
++# TODO: create a Mipso class
++showHelp = False
++pauseMode = False
++showWindowInfo = SHOW_INFO != 0
++showFps = SHOW_FPS != 0
++
++def mipso_process_key(key):
++    global showHelp
++    global pauseMode
++    global showWindowInfo
++    global showFps
++
++    if pauseMode:
++        print ("pause mode, press 'p' to play or any other key to move to the next frame")
++    while True:
++        if key == 27:
++            return key
++        if key > 0 and chr(key) in 'h':
++            showHelp = not showHelp
++        if key > 0 and chr(key) in 'p':
++            pauseMode = not pauseMode
++        if key > 0 and chr(key) in 'i':
++            showWindowInfo = not showWindowInfo
++        if key > 0 and chr(key) in 'f':
++            showFps = not showFps
++        if not pauseMode or key != -1:
++            break
++        key = cv2.waitKey(1)
++    return key
++
++def print_help(frame):
++
++    HELP="\
++Key usage:\n\
++    ESC : exit the demo\n\
++    h   : toggle displaying this help\n\
++    p   : pause the video (any other key will do frame by frame)\n\
++    i   : toggle showing network information\n\
++    f   : toggle showing FPS\n\
++"
++    scale = 1
++    if frame.shape[1] < 1240:
++        scale = scale * frame.shape[1] / 1240
++    for y, line in enumerate(HELP.split('\n')):
++        cv2.putText(frame, line, (20, int(scale*(200 + y * 40))), cv2.FONT_HERSHEY_SIMPLEX,
++                    scale, (255,255,0), 1)
++
++
++def print_text(frame, x, y, text, scale=1.2):
++    font                   = cv2.FONT_HERSHEY_SIMPLEX
++    bottomLeftCornerOfText = (10,500)
++    fontScale              = scale
++    fontColor              = (0,0,255)
++    lineType               = 2 if scale >= 1 else 1
++
++    cv2.putText(frame, text, (x, y),
++        font,
++        fontScale,
++        fontColor,
++        lineType)
++
++def mipso_window_info(f, idx, name, latency):
++    if showHelp:
++        print_help(f)
++    if showWindowInfo:
++        scale = 1
++        if f.shape[1] < 500:
++            scale = scale * f.shape[1] / 500
++        if showFps:
++            print_text( f, 10, int(scale*30), "Vaisw: {} FPS={}".format(name, str(int(1/latency))), scale )
++        else:
++            print_text( f, 10, int(scale*30), "Vaisw: {}".format(name), scale)
++        #print_text(f, 10, 50, "Latency is: " + str(int(1000*latency)) + " ms. FPS is: " + str(int(1/latency)) + " img/s")
++
++#inputSize is a tuple (x, y), meaning (width, height). Flag should respect that format
++#resize_function is a caller-provided function that takes image, x and y as input and returns the resized image
++#get_size_function is a caller-provided function that returns the size (x, y) of the input image to handle cases where the input image is not know
++inputSize = None
++def mipso_resize_input(flag_inputSize, input, resize_function, get_size_function=None):
++    global inputSize
++
++    assert callable(resize_function), 'Expected a resize function as third argument'
++
++    def parse_inputSize(inputSize_string):
++        return tuple( int(dim) for dim in inputSize_string.split('x') )
++
++    if flag_inputSize is None:
++        out_image = input
++    elif flag_inputSize == "auto":
++        if inputSize is None:
++            if isinstance(input, PIL.Image.Image):
++                inputSize = input.size
++            elif isinstance(input, np.ndarray):
++                inputSize = input.shape[1::-1]
++            elif get_size_function is not None:
++                inputSize = get_size_function(input)
++            else:
++                raise TypeError(f'Unknown image type {type(input)}, cannot guess shape of first image')
++            out_image = input
++        else:
++            out_image = resize_function(input, x=inputSize[0], y=inputSize[1])
++    else:
++        if inputSize is None:
++            inputSize = parse_inputSize(flag_inputSize)
++        out_image = resize_function(input, x=inputSize[0], y=inputSize[1])
++    return out_image
++
++
++class MipsoSaver:
++    """
++    This class is used to ease porting of a consistent saving functionality on all Mipsology demos
++
++    Class is initizalized with the following values:
++    out_path       : String that represents the output base path. It is a folder that will contain the video or the images. If it doesn't exist It will be created
++    as_images      : Boolean that indicates that we want to write images and not a video
++    dump_interval  : Integer that controls the frequency at which images will be saved on disk to not fill memory
++    fourcc         : Cv2 fourcc codec to save video
++    fps            : Fps of the video file
++    video_filename : Name of the video file
++
++    Class contains the following methods:
++    add            : Method that receives frames
++                     in video mode, store the frames in an internal buffer
++                     in as_images mode, also accepts a filename parameter and will periodically (based on dump_interval class attribute) call the save method
++    save           : Method to call to save added frames to disk as video or images.
++    """
++    def __init__(self, out_path, as_images=False, dump_interval=100, fourcc=None, fps=30, video_filename='output.avi'):
++        self.out_path = out_path
++        self.as_images = as_images
++        # as_images == True related options (images mode)
++        self.dump_interval = dump_interval
++        # as_images == False related options (video mode)
++        if not self.as_images:
++            self.fourcc = fourcc if fourcc else cv2.VideoWriter_fourcc(*'XVID')
++        self.fps = fps
++        self.video_filename = video_filename
++        self.buffer = {} if self.as_images else []
++        self.frame_counter = 0
++
++        if self.out_path:
++            if not os.path.exists(self.out_path):
++                os.makedirs(self.out_path)
++
++    def add(self, frame, filename=None):
++        if not self.out_path or self.out_path == '/dev/null':
++            return
++
++        if self.as_images:
++            if not filename:
++                filename = f'frame_{self.frame_counter}.png'
++                self.frame_counter += 1
++            self.buffer.update({filename : frame})
++            if len(self.buffer) >= self.dump_interval:
++                self.save()
++        else:
++            self.buffer.append(frame)
++
++    def save(self):
++        if not self.out_path or self.out_path == '/dev/null':
++            return
++
++        if self.as_images:
++            for filename, image in self.buffer.items():
++                if isinstance(image, np.ndarray):
++                    image = image if image.dtype == 'uint8' else image.astype('uint8')
++                cv2.imwrite(os.path.join(self.out_path, filename), image)
++        else:
++            if self.buffer:
++                vidwri = cv2.VideoWriter(
++                            os.path.join(self.out_path,self.video_filename),
++                            self.fourcc,
++                            self.fps,
++                            (self.buffer[0].shape[1], self.buffer[0].shape[0])
++                            )
++                for img in self.buffer:
++                    if isinstance(img, np.ndarray):
++                        img = img if img.dtype == 'uint8' else img.astype('uint8')
++                    else:
++                        print(f'Warning unknown type {type(img)}, saving to video might not work')
++                    vidwri.write(img)
++                vidwri.release()
++
++        self.buffer.clear()
+diff --git a/run b/run
+new file mode 100755
+index 0000000000000000000000000000000000000000..1d00f81baa0a6f6ba69ef43ffd67711e81574574
+--- /dev/null
++++ b/run
+@@ -0,0 +1,29 @@
++#! /bin/bash
++
++input="$1"
++shift
++
++model="./output/resnet101_refinedet320_coco_400000.pth"
++[ -e "$1" ] && [[ "$1" =~ .pth ]] && model="$1" && shift
++
++export VAISW_WORKAROUND_REMOVE_DETECT=1
++
++#keep only the file's name (without the extension)
++basename=${model##*/}
++basename=${basename%.pth}
++
++# Basename is of format <network>_refinedet<input_size>_<dataset>_<number>
++network=$(echo "$basename" | cut -d'_' -f 1)
++
++size=$(echo "$basename" | cut -d'_' -f 2)
++size=${size#refinedet}
++
++dataset=$(echo "$basename" | cut -d'_' -f 3)
++
++# Command to be run
++if [ "$input" = "evaluate" ]; then
++  python3 -W ignore -u eval_refinedet.py --input_size "$size" --dataset "$dataset" --network "$network" --model_path "$model" --cuda False "$@" || exit 1
++else
++  python3 -W ignore -u demo/demo_simple.py --source "$input" --model_path "$model" "$@" || exit 1
++fi
++

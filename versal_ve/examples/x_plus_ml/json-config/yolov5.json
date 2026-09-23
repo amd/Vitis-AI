@@ -1,0 +1,17 @@
+{
+  "xclbin-location": "/run/media/mmcblk0p1/x_plus_ml.xclbin",
+  "exec-cpu-subgraph" : true,
+  "_comment_exec-cpu-subgraph": "true: CPU subgraph is executed on CPU, false: CPU subgraph is not executed",
+  "preprocess-config": {
+    "mean-r": 0,
+    "mean-g": 0,
+    "mean-b": 0,
+    "scale-r": 0.0039215,
+    "scale-g": 0.0039215,
+    "scale-b": 0.0039215,
+    "colour-format" : "RGBX",
+    "maintain-aspect-ratio" : false,
+    "in-mem-bank" : 2,
+    "out-mem-banks" : [1, 2, 3]
+  }
+}

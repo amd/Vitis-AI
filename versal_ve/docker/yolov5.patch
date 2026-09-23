@@ -1,0 +1,1576 @@
+diff --git a/data/coco.yaml b/data/coco.yaml
+index 0c0c4adab05df585c3c38ba07db5e29a03b5a3e0..2f073974091583ddfc098120169af6c884b399a6 100644
+--- a/data/coco.yaml
++++ b/data/coco.yaml
+@@ -8,10 +8,10 @@
+ 
+ 
+ # Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+-path: ../datasets/coco  # dataset root dir
+-train: train2017.txt  # train images (relative to 'path') 118287 images
+-val: val2017.txt  # val images (relative to 'path') 5000 images
+-test: test-dev2017.txt  # 20288 of 40670 images, submit to https://competitions.codalab.org/competitions/20794
++path: /proj/zebra/QA/datasets/coco  # dataset root dir
++train: train2017  # train images (relative to 'path') 118287 images
++val: val2017  # val images (relative to 'path') 5000 images
++test: test-dev2017  # 20288 of 40670 images, submit to https://competitions.codalab.org/competitions/20794
+ 
+ # Classes
+ nc: 80  # number of classes
+@@ -27,19 +27,3 @@ names: ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 't
+ 
+ 
+ # Download script/URL (optional)
+-download: |
+-  from utils.general import download, Path
+-
+-
+-  # Download labels
+-  segments = False  # segment or box labels
+-  dir = Path(yaml['path'])  # dataset root dir
+-  url = 'https://github.com/ultralytics/yolov5/releases/download/v1.0/'
+-  urls = [url + ('coco2017labels-segments.zip' if segments else 'coco2017labels.zip')]  # labels
+-  download(urls, dir=dir.parent)
+-
+-  # Download data
+-  urls = ['http://images.cocodataset.org/zips/train2017.zip',  # 19G, 118k images
+-          'http://images.cocodataset.org/zips/val2017.zip',  # 1G, 5k images
+-          'http://images.cocodataset.org/zips/test2017.zip']  # 7G, 41k images (optional)
+-  download(urls, dir=dir / 'images', threads=3)
+diff --git a/detect.py b/detect.py
+index bb09ce171a966742186e658a04d35188ea45b19d..0ff1b95d25f8f4f2237a6838b7e63ba25db3ffcf 100644
+--- a/detect.py
++++ b/detect.py
+@@ -45,13 +45,18 @@ from utils.general import (LOGGER, check_file, check_img_size, check_imshow, che
+ from utils.plots import Annotator, colors, save_one_box
+ from utils.torch_utils import select_device, time_sync
+ 
++from utils.augmentations import letterbox
++
++import mipso_custom
++import os
++import numpy as np
+ 
+ @torch.no_grad()
+ def run(
+         weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
+         source=ROOT / 'data/images',  # file/dir/URL/glob, 0 for webcam
+         data=ROOT / 'data/coco128.yaml',  # dataset.yaml path
+-        imgsz=(640, 640),  # inference size (height, width)
++        imgsz="640x640",  # inference size (height, width)
+         conf_thres=0.25,  # confidence threshold
+         iou_thres=0.45,  # NMS IOU threshold
+         max_det=1000,  # maximum detections per image
+@@ -74,7 +79,11 @@ def run(
+         hide_conf=False,  # hide confidences
+         half=False,  # use FP16 half-precision inference
+         dnn=False,  # use OpenCV DNN for ONNX inference
+-):
++        batchSize=1,
++        out_file=None,
++        loop=False,
++        keepClasses=None,
++        ):
+     source = str(source)
+     save_img = not nosave and not source.endswith('.txt')  # save inference images
+     is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
+@@ -83,72 +92,179 @@ def run(
+     if is_url and is_file:
+         source = check_file(source)  # download
+ 
+-    # Directories
+-    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
+-    (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+-
+     # Load model
+     device = select_device(device)
+-    model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
+-    stride, names, pt = model.stride, model.names, model.pt
+-    imgsz = check_img_size(imgsz, s=stride)  # check image size
+-
+-    # Dataloader
+-    if webcam:
+-        view_img = check_imshow()
+-        cudnn.benchmark = True  # set True to speed up constant image size inference
+-        dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt)
+-        bs = len(dataset)  # batch_size
+-    else:
+-        dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt)
+-        bs = 1  # batch_size
+-    vid_path, vid_writer = [None] * bs, [None] * bs
++    model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half, keepClasses=keepClasses)
++    stride, names, pt, saved_model = model.stride, model.names, model.pt, model.saved_model
++    h,w = check_img_size(imgsz, s=stride)  # check image size
++
++    # Dataloader (mipso custom)
++    cam = mipso_custom.mipso_opencv_capture(source)
++    if len(cam) > 1:
++        batchSize = len(cam)
++
++    firstShow = True
++
++    if out_file:
++        as_imgs = os.path.isdir(source) or source.split(".")[-1].lower() in ["jpg", "png", "gif", "jpeg", "bmp"]
++        if os.path.isdir(out_file):
++            output = mipso_custom.MipsoSaver(out_file, as_images=as_imgs)
++        else:
++            out_dir, out_filename = os.path.split(out_file)
++            out_dir = "." if not out_dir else out_dir
++            output = mipso_custom.MipsoSaver(out_dir, video_filename=out_filename, as_images=as_imgs)
+ 
+     # Run inference
+-    model.warmup(imgsz=(1 if pt else bs, 3, *imgsz))  # warmup
++    bs = 1 if pt else batchSize
+     seen, windows, dt = 0, [], [0.0, 0.0, 0.0]
+-    for path, im, im0s, vid_cap, s in dataset:
+-        t1 = time_sync()
+-        im = torch.from_numpy(im).to(device)
+-        im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
+-        im /= 255  # 0 - 255 to 0.0 - 1.0
+-        if len(im.shape) == 3:
+-            im = im[None]  # expand for batch dim
+-        t2 = time_sync()
+-        dt[0] += t2 - t1
+ 
++    batch_data = []
++    capture_image = []
++    last_frame = False
++
++    if os.environ.get("VAISW_WORKAROUND_MOVE_IMGSCALE"):
++        model.model.model[0].conv.weight.copy_(model.model.model[0].conv.weight / 255)
++
++    if os.environ.get('VAISW_WORKAROUND_ZERO_COPY'):
++        import VART
++        model = VART.Runner(snapshot_dir=os.environ.get('VAISW_SNAPSHOT_DIRECTORY'))
++
++        if os.environ.get('VAISW_WORKAROUND_ZERO_COPY'):
++            if model.set_input_zero_copy(True):
++                raise AttributeError(
++                    "Cannot modify native format of all input tensors. "
++                    "At least one tensor is linked to a CPU node.")
++            # Allocate native buffers capable of holding data
++            zero_copy_buffer = model.alloc_ddr_bufs()
++
++            if model.set_output_zero_copy(True):
++                raise AttributeError(
++                    "Cannot modify native format of all output tensors. "
++                    "At least one tensor is linked to a CPU node.")
++
++        if os.environ.get('VAISW_WORKAROUND_NATIVE'):
++            if model.set_output_native(True):
++                raise AttributeError(
++                    "Cannot modify native format of all output tensors. "
++                    "At least one tensor is linked to a CPU node.")
++
++    while len(cam) > 0:
++        for video in cam:
++            path, im0 = video.read()
++            if not path:
++                if loop:
++                    video.set(cv2.CAP_PROP_POS_FRAMES, 0)
++                    path, im0 = video.read()
++                else:
++                    cam = []
++
++            if not (im0 is None or im0.size == 0):
++                capture_image.append((path, im0))
++
++                # Pre-process
++                t1 = time_sync()
++                # Padded resize
++                img = letterbox(im0, (h, w))[0]
++                img_h, img_w, _ = img.shape
++                dh, dw = h - img_h, w - img_w
++                if dh != 0 or dw != 0:
++                    img = cv2.copyMakeBorder(img, dh // 2, dh - dh//2, dw // 2, dw - dw//2, cv2.BORDER_CONSTANT, value=[114,114,114])
++                # Convert
++                if pt:
++                    img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
++                else:
++                    img = img[..., ::-1]
++
++                img = np.ascontiguousarray(img)
++
++                img = torch.from_numpy(img)
++                if not saved_model:
++                    img = img.to(device)
++                if not os.environ.get('VAISW_WORKAROUND_UINT_INPUT'):
++                    img = img.half() if half else img.float()  # uint8 to fp16/32
++                if not os.environ.get('VAISW_WORKAROUND_MOVE_IMGSCALE') and not os.environ.get('VAISW_WORKAROUND_SKIP_PREPROC'):
++                    img /= 255.0  # 0 - 255 to 0.0 - 1.0
++
++                batch_data.append(img)
++                t2 = time_sync()
++                if seen > 0:
++                    dt[0] += t2 - t1
++
++        if len(batch_data) < batchSize:
++            if len(cam) > 0:
++                continue
++            elif len(batch_data) == 0:
++                break
++
++        batch_data = torch.stack(batch_data)
+         # Inference
+-        visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
+-        pred = model(im, augment=augment, visualize=visualize)
++        if saved_model:
++            pred = model.model(batch_data.numpy())
++            pred = pred.numpy()
++            pred[..., :4] *= [w, h, w, h]  # xywh normalized to pixels
++            pred = torch.tensor(pred)
++        elif os.environ.get('VAISW_WORKAROUND_ZERO_COPY'):
++            im = [batch_data.numpy()]
++
++            # Quantize
++            im = [
++                (arr * coeff).round().clip(min=-128, max=127).astype(dtype) if (coeff != -1) else arr
++                for arr, coeff, dtype in zip(im, model.input_coeffs, model.input_native_types)
++            ]
++
++            # Conversion to NHWC
++            im = [
++                np.transpose(d, (0, 2, 3, 1)) for d in im
++            ]
++
++            I = len(im)
++            # Copy to buffer
++            for i in range(I):
++                N = im[i].shape[0] # batch size
++                for n in range(N): # for each batch
++                    np.copyto(zero_copy_buffer[n * I + i], im[i][n])
++
++            # Override original data
++            im = zero_copy_buffer
++
++            pred = model(im)
++
++            pred = torch.tensor(np.array([pred]))
++
++        else:
++            pred = model(batch_data, augment=augment, visualize=visualize)
++
+         t3 = time_sync()
+-        dt[1] += t3 - t2
++        if seen > 0:
++            dt[1] += t3 - t2
+ 
+         # NMS
+         pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+-        dt[2] += time_sync() - t3
++        if seen > 0:
++            dt[2] += time_sync() - t3
+ 
+         # Second-stage classifier (optional)
+         # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
+ 
+         # Process predictions
+-        for i, det in enumerate(pred):  # per image
++        for i, det in enumerate(pred):  # detections per image
+             seen += 1
++            path, im0 = capture_image[i]
++            img = batch_data[i]
++            if saved_model:
++                img = img.numpy().transpose((2,0,1))
+             if webcam:  # batch_size >= 1
+-                p, im0, frame = path[i], im0s[i].copy(), dataset.count
+-                s += f'{i}: '
++                p, s, frame = path, f'{i}: ', seen
+             else:
+-                p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
++                p, s, frame = path, '', seen
+ 
+-            p = Path(p)  # to Path
+-            save_path = str(save_dir / p.name)  # im.jpg
+-            txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # im.txt
+-            s += '%gx%g ' % im.shape[2:]  # print string
++            s += '%gx%g ' % img.shape[1:]  # print string
+             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+             imc = im0.copy() if save_crop else im0  # for save_crop
+-            annotator = Annotator(im0, line_width=line_thickness, example=str(names))
++            annotator = Annotator(im0, line_width=line_thickness)
+             if len(det):
+                 # Rescale boxes from img_size to im0 size
+-                det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
++                det[:, :4] = scale_coords(img.shape[1:], det[:, :4], im0.shape).round()
+ 
+                 # Print results
+                 for c in det[:, -1].unique():
+@@ -157,57 +273,48 @@ def run(
+ 
+                 # Write results
+                 for *xyxy, conf, cls in reversed(det):
+-                    if save_txt:  # Write to file
+-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+-                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
+-                        with open(f'{txt_path}.txt', 'a') as f:
+-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
+-
+-                    if save_img or save_crop or view_img:  # Add bbox to image
+-                        c = int(cls)  # integer class
+-                        label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
+-                        annotator.box_label(xyxy, label, color=colors(c, True))
+-                    if save_crop:
+-                        save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
++                    c = int(cls)  # integer class
++                    label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
++                    annotator.box_label(xyxy, label, color=colors(c, True))
+ 
+             # Stream results
+             im0 = annotator.result()
+-            if view_img:
+-                if p not in windows:
+-                    windows.append(p)
+-                    cv2.namedWindow(str(p), cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
+-                    cv2.resizeWindow(str(p), im0.shape[1], im0.shape[0])
+-                cv2.imshow(str(p), im0)
+-                cv2.waitKey(1)  # 1 millisecond
+-
+-            # Save results (image with detections)
+-            if save_img:
+-                if dataset.mode == 'image':
+-                    cv2.imwrite(save_path, im0)
+-                else:  # 'video' or 'stream'
+-                    if vid_path[i] != save_path:  # new video
+-                        vid_path[i] = save_path
+-                        if isinstance(vid_writer[i], cv2.VideoWriter):
+-                            vid_writer[i].release()  # release previous video writer
+-                        if vid_cap:  # video
+-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
+-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+-                        else:  # stream
+-                            fps, w, h = 30, im0.shape[1], im0.shape[0]
+-                        save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
+-                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+-                    vid_writer[i].write(im0)
++            model_name = weights[0].split("/")[1]
++            model_name = model_name.split(".")[0].split("_")[0] # Remove extensions (.pt or _saved_model)
++            mipso_custom.mipso_window_info(im0, i, model_name, t3-t2)
++            if out_file:
++                output.add(im0)
++            else:
++                if firstShow:
++                    mipso_custom.mipso_window_init(i, im0.shape[1], im0.shape[0])
++                cv2.imshow(str(i), im0)
++
++            # Print time (inference-only)
++            LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
++
++        if not out_file:
++            choice = cv2.waitKey(1)  # 1 millisecond
++            choice = mipso_custom.mipso_process_key(choice)
++            if choice == 27:
++                break
++
++        capture_image = []
++        batch_data = []
++        firstShow = False
+ 
+         # Print time (inference-only)
+         LOGGER.info(f'{s}Done. ({t3 - t2:.3f}s)')
+ 
+     # Print results
+-    t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
+-    LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
+-    if save_txt or save_img:
+-        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
+-        LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
++    if seen > 1:
++        t = tuple(x / (seen-1) * 1E3 for x in dt)  # speeds per image
++        LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, h, w)}' % t)
++
++    if out_file:
++        print("No more input, encoding capture...")
++        output.save()
++
++    cv2.destroyAllWindows()
+     if update:
+         strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
+ 
+@@ -217,7 +324,7 @@ def parse_opt():
+     parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov5s.pt', help='model path(s)')
+     parser.add_argument('--source', type=str, default=ROOT / 'data/images', help='file/dir/URL/glob, 0 for webcam')
+     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='(optional) dataset.yaml path')
+-    parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
++    parser.add_argument('--imgsz', '--img', '--img-size', '--inputSize', type=str, default="640x640", help='inference size (pixels)')
+     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
+     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
+     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
+@@ -240,6 +347,10 @@ def parse_opt():
+     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
+     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
+     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
++    parser.add_argument('--batchSize', '--batch', type=int, default=1, help='batch size')
++    parser.add_argument('--out_file', type=str, default=None, required=False, help='output path for saving images/videos')
++    parser.add_argument('--loop', action='store_true', help='loop input. Useful for video file')
++    parser.add_argument('--keepClasses', type=str, default=None, required=False, help='colon separated list of class index to keep')
+     opt = parser.parse_args()
+     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
+     print_args(vars(opt))
+diff --git a/export.py b/export.py
+index 9daf39f871c215fa25dd440a9dc93b68e308278c..222a39ccc015dd902d8a58d55f0726f769355dfc 100644
+--- a/export.py
++++ b/export.py
+@@ -285,6 +285,7 @@ def export_saved_model(model,
+                        topk_all=100,
+                        iou_thres=0.45,
+                        conf_thres=0.25,
++                       shape_in_name=False,
+                        keras=False,
+                        prefix=colorstr('TensorFlow SavedModel:')):
+     # YOLOv5 TensorFlow SavedModel export
+@@ -295,8 +296,9 @@ def export_saved_model(model,
+         from models.tf import TFDetect, TFModel
+ 
+         LOGGER.info(f'\n{prefix} starting export with tensorflow {tf.__version__}...')
+-        f = str(file).replace('.pt', '_saved_model')
+         batch_size, ch, *imgsz = list(im.shape)  # BCHW
++        new_ext = (f'_{"_".join(map(str,imgsz))}' if shape_in_name else '') + '_saved_model'
++        f = str(file).replace('.pt', new_ext)
+ 
+         tf_model = TFModel(cfg=model.yaml, model=model, nc=model.nc, imgsz=imgsz)
+         im = tf.zeros((batch_size, *imgsz, ch))  # BHWC order for TensorFlow
+@@ -305,7 +307,7 @@ def export_saved_model(model,
+         outputs = tf_model.predict(inputs, tf_nms, agnostic_nms, topk_per_class, topk_all, iou_thres, conf_thres)
+         keras_model = tf.keras.Model(inputs=inputs, outputs=outputs)
+         keras_model.trainable = False
+-        keras_model.summary()
++        # keras_model.summary()
+         if keras:
+             keras_model.save(f, save_format='tf')
+         else:
+@@ -472,6 +474,7 @@ def run(
+         topk_all=100,  # TF.js NMS: topk for all classes to keep
+         iou_thres=0.45,  # TF.js NMS: IoU threshold
+         conf_thres=0.25,  # TF.js NMS: confidence threshold
++        shape_in_name=False,
+ ):
+     t = time.time()
+     include = [x.lower() for x in include]  # to lowercase
+@@ -495,7 +498,7 @@ def run(
+ 
+     # Input
+     gs = int(max(model.stride))  # grid size (max stride)
+-    imgsz = [check_img_size(x, gs) for x in imgsz]  # verify img_size are gs-multiples
++    imgsz = [check_img_size(x, gs)[0] for x in imgsz]  # verify img_size are gs-multiples
+     im = torch.zeros(batch_size, 3, *imgsz).to(device)  # image size(1,3,320,192) BCHW iDetection
+ 
+     # Update model
+@@ -542,6 +545,7 @@ def run(
+                                          topk_all=topk_all,
+                                          iou_thres=iou_thres,
+                                          conf_thres=conf_thres,
++                                         shape_in_name=shape_in_name,
+                                          keras=keras)
+         if pb or tfjs:  # pb prerequisite to tfjs
+             f[6] = export_pb(model, file)
+@@ -588,6 +592,7 @@ def parse_opt():
+     parser.add_argument('--topk-all', type=int, default=100, help='TF.js NMS: topk for all classes to keep')
+     parser.add_argument('--iou-thres', type=float, default=0.45, help='TF.js NMS: IoU threshold')
+     parser.add_argument('--conf-thres', type=float, default=0.25, help='TF.js NMS: confidence threshold')
++    parser.add_argument('--shape_in_name', action='store_true', help='Add _H_W before file extension')
+     parser.add_argument('--include',
+                         nargs='+',
+                         default=['torchscript', 'onnx'],
+diff --git a/mipso_custom.py b/mipso_custom.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..59df3cfcab7718bcba8462ee4320c89749df6ee9
+--- /dev/null
++++ b/mipso_custom.py
+@@ -0,0 +1,436 @@
++
++# ===========================================================
++# Copyright(C) 2023-2024 Advanced Micro Devices Inc.  All Rights Reserved.
++# ===========================================================
++
++from collections import deque
++from threading import Thread
++import cv2
++import os
++
++import numpy as np
++import PIL
++############################################################
++############################################################
++
++# the application will open several window and place them on the desktop at
++# specific location. The below variables allow to configure the location
++
++# this is the X/Y offset for window position
++WINDOW_X_OFFSET         = int(os.environ.get("WINDOW_X_OFFSET")         or 0)
++WINDOW_Y_OFFSET         = int(os.environ.get("WINDOW_Y_OFFSET")         or 0)
++
++# this is the number of window per row
++WINDOW_PER_ROW          = int(os.environ.get("WINDOW_PER_ROW")          or 3)
++
++# this is a scaling factor to reduce the window dimension (2: window will be 2x smaller)
++WINDOW_RATIO            = float(os.environ.get("WINDOW_RATIO")          or 1)
++
++# this force the width and height of the video
++WINDOW_WIDTH            = int(os.environ.get("WINDOW_WIDTH")            or 0)
++WINDOW_HEIGHT           = int(os.environ.get("WINDOW_HEIGHT")           or 0)
++
++# this is the index position to place a window so a slide can be displayed. For instance, in a 3x3 configuration use 4 to let the center empty
++WINDOW_SLIDE_IDX        = int(os.environ.get("WINDOW_SLIDE_IDX")        or 4)
++
++# this is the number of batch (usually the number of cores) per system
++BATCH_PER_SYSTEM        = int(os.environ.get("BATCH_PER_SYSTEM")        or 1)
++
++# this is the number of system per board
++SYSTEM_PER_BOARD        = int(os.environ.get("SYSTEM_PER_BOARD")        or 2)
++
++# show info/FPS by default
++SHOW_INFO               = int(os.environ.get("SHOW_INFO")               or 0)
++SHOW_FPS                = int(os.environ.get("SHOW_FPS")                or 0)
++
++
++# enable the MJPG mode
++OPENCV_CAMERA_MJPG      = int(os.environ.get("OPENCV_CAMERA_MJPG")      or 1)
++# force camera width/height
++OPENCV_CAMERA_WIDTH     = int(os.environ.get("OPENCV_CAMERA_WIDTH")     or 0)
++OPENCV_CAMERA_HEIGHT    = int(os.environ.get("OPENCV_CAMERA_HEIGHT")    or 0)
++
++
++############################################################
++############################################################
++
++# only for YoloV2:
++def mipso_get_interpolation():
++    return cv2.INTER_NEAREST
++    return cv2.INTER_LINEAR
++    #return cv2.INTER_LANCZOS4
++
++# only for YoloV2
++def mipso_camera_reduce_delay():
++    return False # normal execution: capture / inference / display from capture
++    return True # reduce delay execution: inference on prev capture / capture / display from capture using previous inference
++
++# only for YoloV2
++def mipso_box_rounding(i):
++    return i
++    round = 20
++    return ((i + round) // (2*round) ) * 2*round
++
++def mipso_camera_init(c):
++    print ("Initial camera resolution {}x{} @ {}".format(
++        c.get(cv2.CAP_PROP_FRAME_WIDTH),
++        c.get(cv2.CAP_PROP_FRAME_HEIGHT),
++        c.get(cv2.CAP_PROP_FPS)))
++    if OPENCV_CAMERA_WIDTH != 0:
++        c.set(cv2.CAP_PROP_FRAME_WIDTH , OPENCV_CAMERA_WIDTH)
++    if OPENCV_CAMERA_HEIGHT != 0:
++        c.set(cv2.CAP_PROP_FRAME_HEIGHT , OPENCV_CAMERA_HEIGHT)
++    if OPENCV_CAMERA_MJPG != 0:
++        c.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
++    print ("Using camera resolution {}x{} @ {}".format(
++        c.get(cv2.CAP_PROP_FRAME_WIDTH),
++        c.get(cv2.CAP_PROP_FRAME_HEIGHT),
++        c.get(cv2.CAP_PROP_FPS)))
++
++def mipso_window_init(idx, width, height):
++    cv2.namedWindow(str(idx), cv2.WINDOW_GUI_NORMAL | cv2.WINDOW_FREERATIO)
++    #cv2.namedWindow(str(idx), cv2.WINDOW_NORMAL)
++
++    if WINDOW_WIDTH != 0 and WINDOW_HEIGHT != 0:
++        cur_width = WINDOW_WIDTH
++        cur_height = WINDOW_HEIGHT
++    else:
++        cur_width = int(width // WINDOW_RATIO)
++        cur_height = int(height // WINDOW_RATIO)
++
++    cv2.resizeWindow(str(idx), (cur_width, cur_height))
++    board=0
++    system=0
++    core=0
++    if 'VAISW_RUNSESSION_ENABLECORES' in os.environ and os.environ['VAISW_RUNSESSION_ENABLECORES'].startswith('B'):
++        c = os.environ['VAISW_RUNSESSION_ENABLECORES'].split(':')[0].split('_')
++        if len(c[0]) > 0:
++            board = int(c[0][1:])
++        if len(c) > 1:
++            system = int(c[1][1:])
++        if len(c) > 2:
++            core = int(c[2][1:])
++
++    cur_idx = idx + core + BATCH_PER_SYSTEM * ( system + SYSTEM_PER_BOARD * board)
++    # in case we want to put slide somewhere
++    if cur_idx >= WINDOW_SLIDE_IDX:
++        cur_idx = cur_idx + 1
++    pos_x = WINDOW_X_OFFSET + int( (cur_idx % WINDOW_PER_ROW)*cur_width)
++    pos_y = WINDOW_Y_OFFSET + int( 0 + (cur_idx // WINDOW_PER_ROW)*cur_height)
++
++    print("Move window {} {}x{} for system {} @ ({} , {})".format(idx, cur_width, cur_height, system, pos_x, pos_y))
++    cv2.moveWindow(str(idx), pos_x, pos_y)
++
++def mipso_parse_input(file):
++    mode='file'
++    for part in file.split(':'):
++        if 'camera' == part:
++            mode='camera'
++            continue
++        if part.startswith('http'):
++            mode=part
++            continue
++        if part.isdigit():
++            yield mode, int(part)
++        elif mode.startswith('http'):
++            yield 'http', mode + ':' + part
++            mode='file'
++        else:
++            mode='file'
++            yield mode, part
++
++
++class captureDirectory(object):
++    def __init__(self, path):
++        self.path = path
++        self.l = iter([os.path.join(self.path, x) for x in sorted(os.listdir(self.path))])
++
++    def isOpened(self):
++        return os.path.isdir(self.path)
++    def get(self, prop):
++        # only return the FPS
++        return 1
++    def read(self):
++        try:
++            i = next(self.l)
++        except StopIteration:
++            return False, None
++        return i, cv2.imread(i)
++
++class liveCapture(object):
++    def __init__(self,src):
++        self.stop = False
++        self.status = False
++        self.frames = deque([])
++        self.capture = cv2.VideoCapture(src)
++        #self.capture.set(cv2.CAP_PROP_BUFFERSIZE,2)
++        self.FPS = self.capture.get(cv2.CAP_PROP_FPS)
++        self.thread1 = Thread(target = self.bg_read, args=())
++        self.thread1.daemon = True
++        self.thread1.start()
++        self.readFps = 1
++    def bg_read(self):
++        while not self.stop:
++            if self.capture.isOpened():
++                self.status, frame = self.capture.read()
++                if self.status:
++                    self.frames.append(frame)
++    def isOpened(self):
++        return self.capture.isOpened()
++    def read(self):
++        # do a kind of adaptative fast forward with input buffer of 200 images
++        l = len(self.frames)
++        if l > 200:
++            self.readFps = 1 << ((l//100)-1)
++        elif l < 200:
++            self.readFps = 1
++        if len(self.frames) > 0:
++            f = self.frames[0]
++            for _ in range(int(self.readFps)):
++                # keep always 1 frame in the buffer
++                if len(self.frames) == 1:
++                    break
++                self.frames.popleft()
++            return True, f
++        else:
++            return False, None
++    def get(self, prop):
++        # only return the FPS
++        return int(self.FPS)
++    def __del__(self):
++        self.stop = True
++        self.thread1.join()
++
++
++def mipso_opencv_capture(file):
++    """
++    return a list of opencv capture device
++    """
++    camera = []
++    # TODO: use a better handling of the different mode (class)
++    if 'camera' == file:
++        # open all camera
++        camera_idx=0
++        while True:
++            c = cv2.VideoCapture(camera_idx)
++            if c.isOpened() == False:
++                break
++            camera.append(c)
++            mipso_camera_init(c)
++            camera_idx = camera_idx + 1
++    else:
++        for mode, url in mipso_parse_input(file):
++            if mode.startswith('http') and 'youtube' in url:
++                import pafy
++                option = url.split('@')
++                v = pafy.new(option[0])
++                resolution = [s.resolution for s in v.allstreams]
++                if option[-1] == 'list':
++                    print(f'Available resolution for {option[0]} are:')
++                    print('\n'.join(resolution))
++                    exit(0)
++                elif option[-1] in resolution:
++                    url = v.allstreams[resolution.index(option[-1])].url
++                else:
++                    url = v.getbest().url
++                if 'live' in option:
++                    c = liveCapture(url)
++                else:
++                    c = cv2.VideoCapture(url)
++            elif os.path.isdir(url):
++                c = captureDirectory(url)
++            else:
++                c = cv2.VideoCapture(url)
++            if c.isOpened() == False:
++                print("Error opening source {} {}".format(mode, url))
++                break
++            if mode == 'camera':
++                mipso_camera_init(c)
++            camera.append(c)
++
++    assert len(camera) > 0, 'Cannot capture source'
++    return camera
++
++# TODO: create a Mipso class
++showHelp = False
++pauseMode = False
++showWindowInfo = SHOW_INFO != 0
++showFps = SHOW_FPS != 0
++
++def mipso_process_key(key):
++    global showHelp
++    global pauseMode
++    global showWindowInfo
++    global showFps
++
++    if pauseMode:
++        print ("pause mode, press 'p' to play or any other key to move to the next frame")
++    while True:
++        if key == 27:
++            return key
++        if key > 0 and chr(key) in 'h':
++            showHelp = not showHelp
++        if key > 0 and chr(key) in 'p':
++            pauseMode = not pauseMode
++        if key > 0 and chr(key) in 'i':
++            showWindowInfo = not showWindowInfo
++        if key > 0 and chr(key) in 'f':
++            showFps = not showFps
++        if not pauseMode or key != -1:
++            break
++        key = cv2.waitKey(1)
++    return key
++
++def print_help(frame):
++
++    HELP="\
++Key usage:\n\
++    ESC : exit the demo\n\
++    h   : toggle displaying this help\n\
++    p   : pause the video (any other key will do frame by frame)\n\
++    i   : toggle showing network information\n\
++    f   : toggle showing FPS\n\
++"
++    scale = 1
++    if frame.shape[1] < 1240:
++        scale = scale * frame.shape[1] / 1240
++    for y, line in enumerate(HELP.split('\n')):
++        cv2.putText(frame, line, (20, int(scale*(200 + y * 40))), cv2.FONT_HERSHEY_SIMPLEX,
++                    scale, (255,255,0), 1)
++
++
++def print_text(frame, x, y, text, scale=1.2):
++    font                   = cv2.FONT_HERSHEY_SIMPLEX
++    bottomLeftCornerOfText = (10,500)
++    fontScale              = scale
++    fontColor              = (0,0,255)
++    lineType               = 2 if scale >= 1 else 1
++
++    cv2.putText(frame, text, (x, y),
++        font,
++        fontScale,
++        fontColor,
++        lineType)
++
++def mipso_window_info(f, idx, name, latency):
++    if showHelp:
++        print_help(f)
++    if showWindowInfo:
++        scale = 1
++        if f.shape[1] < 500:
++            scale = scale * f.shape[1] / 500
++        if showFps:
++            print_text( f, 10, int(scale*30), "Vaisw: {} FPS={}".format(name, str(int(1/latency))), scale )
++        else:
++            print_text( f, 10, int(scale*30), "Vaisw: {}".format(name), scale)
++        #print_text(f, 10, 50, "Latency is: " + str(int(1000*latency)) + " ms. FPS is: " + str(int(1/latency)) + " img/s")
++
++#inputSize is a tuple (x, y), meaning (width, height). Flag should respect that format
++#resize_function is a caller-provided function that takes image, x and y as input and returns the resized image
++#get_size_function is a caller-provided function that returns the size (x, y) of the input image to handle cases where the input image is not know
++inputSize = None
++def mipso_resize_input(flag_inputSize, input, resize_function, get_size_function=None):
++    global inputSize
++
++    assert callable(resize_function), 'Expected a resize function as third argument'
++
++    def parse_inputSize(inputSize_string):
++        return tuple( int(dim) for dim in inputSize_string.split('x') )
++
++    if flag_inputSize is None:
++        out_image = input
++    elif flag_inputSize == "auto":
++        if inputSize is None:
++            if isinstance(input, PIL.Image.Image):
++                inputSize = input.size
++            elif isinstance(input, np.ndarray):
++                inputSize = input.shape[1::-1]
++            elif get_size_function is not None:
++                inputSize = get_size_function(input)
++            else:
++                raise TypeError(f'Unknown image type {type(input)}, cannot guess shape of first image')
++            out_image = input
++        else:
++            out_image = resize_function(input, x=inputSize[0], y=inputSize[1])
++    else:
++        if inputSize is None:
++            inputSize = parse_inputSize(flag_inputSize)
++        out_image = resize_function(input, x=inputSize[0], y=inputSize[1])
++    return out_image
++
++
++class MipsoSaver:
++    """
++    This class is used to ease porting of a consistent saving functionality on all Mipsology demos
++
++    Class is initizalized with the following values:
++    out_path       : String that represents the output base path. It is a folder that will contain the video or the images. If it doesn't exist It will be created
++    as_images      : Boolean that indicates that we want to write images and not a video
++    dump_interval  : Integer that controls the frequency at which images will be saved on disk to not fill memory
++    fourcc         : Cv2 fourcc codec to save video
++    fps            : Fps of the video file
++    video_filename : Name of the video file
++
++    Class contains the following methods:
++    add            : Method that receives frames
++                     in video mode, store the frames in an internal buffer
++                     in as_images mode, also accepts a filename parameter and will periodically (based on dump_interval class attribute) call the save method
++    save           : Method to call to save added frames to disk as video or images.
++    """
++    def __init__(self, out_path, as_images=False, dump_interval=100, fourcc=None, fps=30, video_filename='output.avi'):
++        self.out_path = out_path
++        self.as_images = as_images
++        # as_images == True related options (images mode)
++        self.dump_interval = dump_interval
++        # as_images == False related options (video mode)
++        if not self.as_images:
++            self.fourcc = fourcc if fourcc else cv2.VideoWriter_fourcc(*'XVID')
++        self.fps = fps
++        self.video_filename = video_filename
++        self.buffer = {} if self.as_images else []
++        self.frame_counter = 0
++
++        if self.out_path:
++            if not os.path.exists(self.out_path):
++                os.makedirs(self.out_path)
++
++    def add(self, frame, filename=None):
++        if not self.out_path or self.out_path == '/dev/null':
++            return
++
++        if self.as_images:
++            if not filename:
++                filename = f'frame_{self.frame_counter}.png'
++                self.frame_counter += 1
++            self.buffer.update({filename : frame})
++            if len(self.buffer) >= self.dump_interval:
++                self.save()
++        else:
++            self.buffer.append(frame)
++
++    def save(self):
++        if not self.out_path or self.out_path == '/dev/null':
++            return
++
++        if self.as_images:
++            for filename, image in self.buffer.items():
++                if isinstance(image, np.ndarray):
++                    image = image if image.dtype == 'uint8' else image.astype('uint8')
++                cv2.imwrite(os.path.join(self.out_path, filename), image)
++        else:
++            if self.buffer:
++                vidwri = cv2.VideoWriter(
++                            os.path.join(self.out_path,self.video_filename),
++                            self.fourcc,
++                            self.fps,
++                            (self.buffer[0].shape[1], self.buffer[0].shape[0])
++                            )
++                for img in self.buffer:
++                    if isinstance(img, np.ndarray):
++                        img = img if img.dtype == 'uint8' else img.astype('uint8')
++                    else:
++                        print(f'Warning unknown type {type(img)}, saving to video might not work')
++                    vidwri.write(img)
++                vidwri.release()
++
++        self.buffer.clear()
+diff --git a/models/common.py b/models/common.py
+index a40207fd4d7bfcc4859bbe919999ec46eb544143..92fb2b717eb97a16fcb14bcd4cfad768a29bea1a 100644
+--- a/models/common.py
++++ b/models/common.py
+@@ -305,7 +305,7 @@ class Concat(nn.Module):
+ 
+ class DetectMultiBackend(nn.Module):
+     # YOLOv5 MultiBackend class for python inference on various backends
+-    def __init__(self, weights='yolov5s.pt', device=torch.device('cpu'), dnn=False, data=None, fp16=False):
++    def __init__(self, weights='yolov5s.pt', device=torch.device('cpu'), dnn=False, data=None, fp16=False, keepClasses=None):
+         # Usage:
+         #   PyTorch:              weights = *.pt
+         #   TorchScript:                    *.torchscript
+@@ -331,10 +331,27 @@ class DetectMultiBackend(nn.Module):
+                 names = yaml.safe_load(f)['names']
+ 
+         if pt:  # PyTorch
+-            model = attempt_load(weights if isinstance(weights, list) else w, device=device)
++            from models.yolo import Detect
++            from utils.activations import Hardswish, SiLU
++            import os
++
++            model = attempt_load(weights if isinstance(weights, list) else w, device=device, keepClasses=keepClasses)
+             stride = max(int(model.stride.max()), 32)  # model stride
+             names = model.module.names if hasattr(model, 'module') else model.names  # get class names
++            if keepClasses:
++                names = [names[int(i)] for i in keepClasses.split(":")]
+             model.half() if fp16 else model.float()
++            if os.environ.get("VAISW_WORKAROUND_ONNX_DYNAMIC"):
++                model.eval()
++                for k, m in model.named_modules():
++                    if isinstance(m, Conv):  # assign export-friendly activations
++                        if isinstance(m.act, nn.Hardswish):
++                            m.act = Hardswish()
++                        elif isinstance(m.act, nn.SiLU):
++                            m.act = SiLU()
++                    elif isinstance(m, Detect):
++                        m.inplace = False
++                        m.onnx_dynamic = False
+             self.model = model  # explicitly assign for to(), cpu(), cuda(), half()
+         elif jit:  # TorchScript
+             LOGGER.info(f'Loading {w} for TorchScript inference...')
+diff --git a/models/experimental.py b/models/experimental.py
+index db8e5b8e1dfd6389b6b1cefa05862d9cdd1150c5..ab05dd43bc10edf94feb6d277a8e9ed46a2db22a 100644
+--- a/models/experimental.py
++++ b/models/experimental.py
+@@ -71,13 +71,13 @@ class Ensemble(nn.ModuleList):
+         return y, None  # inference, train output
+ 
+ 
+-def attempt_load(weights, device=None, inplace=True, fuse=True):
++def attempt_load(weights, device=None, inplace=True, fuse=True, keepClasses=None):
+     # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a
+     from models.yolo import Detect, Model
+ 
+     model = Ensemble()
+     for w in weights if isinstance(weights, list) else [weights]:
+-        ckpt = torch.load(attempt_download(w), map_location='cpu')  # load
++        ckpt = torch.load(attempt_download(w), weights_only=False, map_location='cpu')  # load
+         ckpt = (ckpt.get('ema') or ckpt['model']).to(device).float()  # FP32 model
+         model.append(ckpt.fuse().eval() if fuse else ckpt.eval())  # fused or un-fused model in eval mode
+ 
+@@ -86,9 +86,12 @@ def attempt_load(weights, device=None, inplace=True, fuse=True):
+         t = type(m)
+         if t in (nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU, Detect, Model):
+             m.inplace = inplace  # torch 1.7.0 compatibility
+-            if t is Detect and not isinstance(m.anchor_grid, list):
+-                delattr(m, 'anchor_grid')
+-                setattr(m, 'anchor_grid', [torch.zeros(1)] * m.nl)
++            if t is Detect:
++                if keepClasses:
++                    m.keepClass([int(i) for i in keepClasses.split(":")])
++                if not isinstance(m.anchor_grid, list):
++                    delattr(m, 'anchor_grid')
++                    setattr(m, 'anchor_grid', [torch.zeros(1)] * m.nl)
+         elif t is Conv:
+             m._non_persistent_buffers_set = set()  # torch 1.6.0 compatibility
+         elif t is nn.Upsample and not hasattr(m, 'recompute_scale_factor'):
+@@ -101,4 +104,4 @@ def attempt_load(weights, device=None, inplace=True, fuse=True):
+         setattr(model, k, getattr(model[0], k))
+     model.stride = model[torch.argmax(torch.tensor([m.stride.max() for m in model])).int()].stride  # max stride
+     assert all(model[0].nc == m.nc for m in model), f'Models have different class counts: {[m.nc for m in model]}'
+-    return model  # return ensemble
++    return names, model  # return ensemble
+diff --git a/models/yolo.py b/models/yolo.py
+index 02660e6c4130d43b840471866f937b3e68b9faa0..6c2e58639361821b510e8577fcf6d38fa91278de 100644
+--- a/models/yolo.py
++++ b/models/yolo.py
+@@ -38,6 +38,7 @@ class Detect(nn.Module):
+     stride = None  # strides computed during build
+     onnx_dynamic = False  # ONNX export parameter
+     export = False  # export mode
++    keepMap = None
+ 
+     def __init__(self, nc=80, anchors=(), ch=(), inplace=True):  # detection layer
+         super().__init__()
+@@ -51,10 +52,37 @@ class Detect(nn.Module):
+         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+         self.inplace = inplace  # use in-place ops (e.g. slice assignment)
+ 
++
++    def keepClass(self, classId):
++        """ keep only the classId instead of the 80 classes"""
++        c = np.asarray(classId)
++        box_description = self.no - self.nc # x, y, w, h, c
++        c = np.append(np.arange(box_description), c + box_description)
++        # now takes all the output per anchor
++        self.keepMap = np.empty(0, dtype=np.int32)
++        for i in range(self.na):
++            self.keepMap = np.append(self.keepMap, c + self.no*i)
++        print("Select only the maps ", self.keepMap)
++        self.keepMap = torch.tensor(self.keepMap)
++        self.no = len(c)
++        self.nc = self.no - box_description
++        self.proj = np.zeros((255, len(self.keepMap)))
++        for i in range(len(self.keepMap)):
++            self.proj[self.keepMap[i], i] = 1
++        self.proj = torch.tensor(self.proj, dtype=torch.float).reshape((1,255,len(self.keepMap)))
++        self.proj_conv = nn.Conv2d(255, len(self.keepMap), 1)
++        self.proj_conv.weight.copy_(self.proj.unsqueeze(1).transpose(0,-1).transpose(1,2))
++
+     def forward(self, x):
+         z = []  # inference output
+         for i in range(self.nl):
+             x[i] = self.m[i](x[i])  # conv
++            if self.keepMap is not None:
++                # Gather
++                # x[i] = torch.index_select(x[i], 1, self.keepMap)
++
++                # Proj matrix multiplication as a conv
++                x[i] = self.proj_conv(x[i])
+             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
+             x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+ 
+@@ -149,6 +177,8 @@ class Model(nn.Module):
+         return torch.cat(y, 1), None  # augmented inference, train
+ 
+     def _forward_once(self, x, profile=False, visualize=False):
++        if os.environ.get('VAISW_WORKAROUND_UINT_INPUT'):
++            x = x.float()
+         y, dt = [], []  # outputs
+         for m in self.model:
+             if m.f != -1:  # if not from previous layer
+diff --git a/run b/run
+new file mode 100755
+index 0000000000000000000000000000000000000000..33a270835c33c3c72249ff2ba68c9a78afad2b6d
+--- /dev/null
++++ b/run
+@@ -0,0 +1,45 @@
++#! /bin/bash
++
++export VAISW_WORKAROUND_ONNX_DYNAMIC=1
++export VAISW_WORKAROUND_DISABLE_RECT=1
++
++input="$1"
++shift
++
++# default values
++size="s"
++ext="saved_model"
++inputSize="640x640"
++
++args=""
++while [ $# -gt 0 ]
++do
++  [ "$1" == "--inputSize" ] && inputSize="$2" && shift 2 && continue
++  [ "$1" == "--size" ] && size="$2" && shift 2 && continue
++  [ "$1" == "--ext" ] && ext="$2" && shift 2 && continue
++  args="$args $1" && shift
++done
++
++# creating correct weights file name
++w="${inputSize%x*}"
++h="${inputSize#*x}"
++if [ "$ext" == "saved_model" ]; then
++  weights="weights/yolov5${size}_${h}_${w}_${ext}"
++elif [ "$ext" == "pt" ]; then
++  weights="weights/yolov5${size}.pt"
++else
++  weights="weights/yolov5${size}_${h}_${w}.${ext}"
++fi
++
++if [[ ! -e $weights ]]; then
++  echo "Weights file $weights not found; exporting it"
++  extra_args=""
++  [ "$ext" == "saved_model" ] && extra_args="--dynamic $extra_args"
++  ! VAISW_ENABLE_PYWRAPPER=0 python3 export.py --weights "weights/yolov5${size}.pt" --imgsz "$h" "$w" --shape_in_name --include "$ext" $extra_args && echo "Export of $weights failed, exiting" && exit 1
++fi
++
++if [ "$input" = "evaluate" ]; then
++  python3 val.py --weights "$weights" --inputSize "$inputSize" --data "data/coco.yaml" --conf-thres 0.001 --iou-thres 0.65 $args || exit 1
++else
++  python3 detect.py --weights "$weights" --inputSize "$inputSize" --source "$input" $args || exit 1
++fi
+diff --git a/utils/dataloaders.py b/utils/dataloaders.py
+index 5d4dfc6e4d14bbe0ed6dd03c96fe1a6a0cd19cc4..1d33b36d2fd6ededa6ef9eb102b8fc45e2b1e24b 100755
+--- a/utils/dataloaders.py
++++ b/utils/dataloaders.py
+@@ -106,6 +106,7 @@ def create_dataloader(path,
+                       image_weights=False,
+                       quad=False,
+                       prefix='',
++                      nbImages=None,
+                       shuffle=False):
+     if rect and shuffle:
+         LOGGER.warning('WARNING: --rect is incompatible with DataLoader shuffle, setting shuffle=False')
+@@ -123,6 +124,7 @@ def create_dataloader(path,
+             stride=int(stride),
+             pad=pad,
+             image_weights=image_weights,
++            nbImages=nbImages,
+             prefix=prefix)
+ 
+     batch_size = min(batch_size, len(dataset))
+@@ -401,7 +403,7 @@ class LoadImagesAndLabels(Dataset):
+ 
+     def __init__(self,
+                  path,
+-                 img_size=640,
++                 img_size=(640, 640),
+                  batch_size=16,
+                  augment=False,
+                  hyp=None,
+@@ -411,6 +413,7 @@ class LoadImagesAndLabels(Dataset):
+                  single_cls=False,
+                  stride=32,
+                  pad=0.0,
++                 nbImages=None,
+                  prefix=''):
+         self.img_size = img_size
+         self.augment = augment
+@@ -418,10 +421,11 @@ class LoadImagesAndLabels(Dataset):
+         self.image_weights = image_weights
+         self.rect = False if image_weights else rect
+         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
+-        self.mosaic_border = [-img_size // 2, -img_size // 2]
++        self.mosaic_border = [-img_size[0] // 2, -img_size[1] // 2]
+         self.stride = stride
+         self.path = path
+         self.albumentations = Albumentations() if augment else None
++        self.nbImages = nbImages
+ 
+         try:
+             f = []  # image files
+@@ -439,7 +443,10 @@ class LoadImagesAndLabels(Dataset):
+                 else:
+                     raise Exception(f'{prefix}{p} does not exist')
+             self.im_files = sorted(x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in IMG_FORMATS)
+-            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
++            if self.nbImages:
++                # if it is not None, only partial mAP
++                self.im_files = self.im_files[:self.nbImages]
++            # self.im_files = sorted([x for x in f if x.suffix[1:].lower() in img_formats])  # pathlib
+             assert self.im_files, f'{prefix}No images found'
+         except Exception as e:
+             raise Exception(f'{prefix}Error loading data from {path}: {e}\nSee {HELP_URL}')
+@@ -458,7 +465,7 @@ class LoadImagesAndLabels(Dataset):
+         nf, nm, ne, nc, n = cache.pop('results')  # found, missing, empty, corrupt, total
+         if exists and LOCAL_RANK in {-1, 0}:
+             d = f"Scanning '{cache_path}' images and labels... {nf} found, {nm} missing, {ne} empty, {nc} corrupt"
+-            tqdm(None, desc=prefix + d, total=n, initial=n, bar_format=BAR_FORMAT)  # display cache results
++            tqdm(None, desc=prefix + d, total=n, initial=n) #, bar_format=BAR_FORMAT)  # display cache results
+             if cache['msgs']:
+                 LOGGER.info('\n'.join(cache['msgs']))  # display warnings
+         assert nf > 0 or not augment, f'{prefix}No labels in {cache_path}. Can not train without labels. See {HELP_URL}'
+@@ -471,7 +478,7 @@ class LoadImagesAndLabels(Dataset):
+         self.im_files = list(cache.keys())  # update
+         self.label_files = img2label_paths(cache.keys())  # update
+         n = len(shapes)  # number of images
+-        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
++        bi = np.floor(np.arange(n) / batch_size).astype(int)  # batch index
+         nb = bi[-1] + 1  # number of batches
+         self.batch = bi  # batch index of image
+         self.n = n
+@@ -513,7 +520,7 @@ class LoadImagesAndLabels(Dataset):
+                 elif mini > 1:
+                     shapes[i] = [1, 1 / mini]
+ 
+-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
++            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
+ 
+         # Cache images into RAM/disk for faster training (WARNING: large datasets may exceed system resources)
+         self.ims = [None] * n
+@@ -523,7 +530,7 @@ class LoadImagesAndLabels(Dataset):
+             self.im_hw0, self.im_hw = [None] * n, [None] * n
+             fcn = self.cache_images_to_disk if cache_images == 'disk' else self.load_image
+             results = ThreadPool(NUM_THREADS).imap(fcn, range(n))
+-            pbar = tqdm(enumerate(results), total=n, bar_format=BAR_FORMAT, disable=LOCAL_RANK > 0)
++            pbar = tqdm(enumerate(results), total=n, disable=LOCAL_RANK > 0) #, bar_format=BAR_FORMAT, disable=LOCAL_RANK > 0)
+             for i, x in pbar:
+                 if cache_images == 'disk':
+                     gb += self.npy_files[i].stat().st_size
+@@ -542,7 +549,7 @@ class LoadImagesAndLabels(Dataset):
+             pbar = tqdm(pool.imap(verify_image_label, zip(self.im_files, self.label_files, repeat(prefix))),
+                         desc=desc,
+                         total=len(self.im_files),
+-                        bar_format=BAR_FORMAT)
++                        ) #bar_format=BAR_FORMAT)
+             for im_file, lb, shape, segments, nm_f, nf_f, ne_f, nc_f, msg in pbar:
+                 nm += nm_f
+                 nf += nf_f
+@@ -664,7 +671,7 @@ class LoadImagesAndLabels(Dataset):
+                 im = cv2.imread(f)  # BGR
+                 assert im is not None, f'Image Not Found {f}'
+             h0, w0 = im.shape[:2]  # orig hw
+-            r = self.img_size / max(h0, w0)  # ratio
++            r = max(self.img_size) / max(h0, w0)  # ratio
+             if r != 1:  # if sizes are not equal
+                 interp = cv2.INTER_LINEAR if (self.augment or r > 1) else cv2.INTER_AREA
+                 im = cv2.resize(im, (int(w0 * r), int(h0 * r)), interpolation=interp)
+diff --git a/utils/general.py b/utils/general.py
+index a3e242d78a174677c3b8e62e7bb989994f01d326..609923a9cd4c55d1dfdb7171b4fbe13040a1584c 100755
+--- a/utils/general.py
++++ b/utils/general.py
+@@ -52,7 +52,6 @@ np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format})
+ pd.options.display.max_columns = 10
+ cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
+ os.environ['NUMEXPR_MAX_THREADS'] = str(NUM_THREADS)  # NumExpr max threads
+-os.environ['OMP_NUM_THREADS'] = str(NUM_THREADS)  # OpenMP max threads (PyTorch and SciPy)
+ 
+ 
+ def is_kaggle():
+@@ -334,6 +333,7 @@ def check_version(current='0.0.0', minimum='0.0.0', name='version ', pinned=Fals
+ 
+ @try_except
+ def check_requirements(requirements=ROOT / 'requirements.txt', exclude=(), install=True, cmds=()):
++    return
+     # Check installed dependencies meet requirements (pass *.txt file or list of packages)
+     prefix = colorstr('red', 'bold', 'requirements:')
+     check_python()  # check python version
+@@ -373,12 +373,23 @@ def check_img_size(imgsz, s=32, floor=0):
+     # Verify image size is a multiple of stride s in each dimension
+     if isinstance(imgsz, int):  # integer i.e. img_size=640
+         new_size = max(make_divisible(imgsz, int(s)), floor)
++        if new_size != imgsz:
++            print(f'WARNING: --input_size {imgsz} must be multiple of max stride {s}, updating to {new_size}x{new_size}')
++        return new_size, new_size
++    elif isinstance(imgsz, str):
++        w,h = map(int, imgsz.split("x"))
++        # Verify imgsz is a multiple of stride s
++        new_h = max(make_divisible(h, int(s)), floor)  # ceil gs-multiple
++        new_w = max(make_divisible(w, int(s)), floor)  # ceil gs-multiple
++        if new_h != h or new_w != w:
++            print(f'WARNING: --input_size {imgsz} must be multiple of max stride {s}, updating to {new_h}x{new_w}')
++        return new_h, new_w
+     else:  # list i.e. img_size=[640, 480]
+         imgsz = list(imgsz)  # convert to list if tuple
+         new_size = [max(make_divisible(x, int(s)), floor) for x in imgsz]
+-    if new_size != imgsz:
+-        LOGGER.warning(f'WARNING: --img-size {imgsz} must be multiple of max stride {s}, updating to {new_size}')
+-    return new_size
++        if new_size != imgsz:
++            LOGGER.warning(f'WARNING: --img-size {imgsz} must be multiple of max stride {s}, updating to {new_size}')
++        return new_size
+ 
+ 
+ def check_imshow():
+diff --git a/utils/plots.py b/utils/plots.py
+index 1bbb9c09c33afe83c90d6ea96511ae64c8d9bec9..2bfdb84fb10b2d431e2ffb581b0108eed2e051a1 100644
+--- a/utils/plots.py
++++ b/utils/plots.py
+@@ -85,7 +85,10 @@ class Annotator:
+         if self.pil or not is_ascii(label):
+             self.draw.rectangle(box, width=self.lw, outline=color)  # box
+             if label:
+-                w, h = self.font.getsize(label)  # text width, height
++                try:
++                    w, h = self.font.getsize(label)  # text width, height
++                except AttributeError:
++                    _, _, w, h = self.font.getbbox(label)
+                 outside = box[1] - h >= 0  # label fits outside box
+                 self.draw.rectangle(
+                     (box[0], box[1] - h if outside else box[1], box[0] + w + 1,
+@@ -117,7 +120,10 @@ class Annotator:
+ 
+     def text(self, xy, text, txt_color=(255, 255, 255)):
+         # Add text to image (PIL-only)
+-        w, h = self.font.getsize(text)  # text width, height
++        try:
++            w, h = self.font.getsize(text)  # text width, height
++        except AttributeError:
++            _, _, w, h = self.font.getbbox(text)
+         self.draw.text((xy[0], xy[1] - h + 1), text, fill=txt_color, font=self.font)
+ 
+     def result(self):
+diff --git a/val.py b/val.py
+index f4f4bab7e92d57277c499cc8f23ead743714f8ca..ef54c41fa528cbf1f49b06f8dd5e0e53d51a56b5 100644
+--- a/val.py
++++ b/val.py
+@@ -116,6 +116,8 @@ def run(
+         exist_ok=False,  # existing project/name ok, do not increment
+         half=True,  # use FP16 half-precision inference
+         dnn=False,  # use OpenCV DNN for ONNX inference
++        nbImages=None,
++        threshold=None,
+         model=None,
+         dataloader=None,
+         save_dir=Path(''),
+@@ -138,8 +140,8 @@ def run(
+ 
+         # Load model
+         model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
+-        stride, pt, jit, engine = model.stride, model.pt, model.jit, model.engine
+-        imgsz = check_img_size(imgsz, s=stride)  # check image size
++        stride, pt, jit, engine, saved_model = model.stride, model.pt, model.jit, model.engine, model.saved_model
++        h,w = check_img_size(imgsz, s=stride)  # check image size
+         half = model.fp16  # FP16 supported on limited backends with CUDA
+         if engine:
+             batch_size = model.batch_size
+@@ -154,8 +156,10 @@ def run(
+ 
+     # Configure
+     model.eval()
++    if os.environ.get("VAISW_WORKAROUND_MOVE_IMGSCALE"):
++        model.model.model[0].conv.weight.copy_(model.model.model[0].conv.weight / 255)
+     cuda = device.type != 'cpu'
+-    is_coco = isinstance(data.get('val'), str) and data['val'].endswith(f'coco{os.sep}val2017.txt')  # COCO dataset
++    is_coco = isinstance(data.get('val'), str) and 'val2017' in data['val']  # COCO dataset
+     nc = 1 if single_cls else int(data['nc'])  # number of classes
+     iouv = torch.linspace(0.5, 0.95, 10, device=device)  # iou vector for mAP@0.5:0.95
+     niou = iouv.numel()
+@@ -170,14 +174,16 @@ def run(
+         pad = 0.0 if task in ('speed', 'benchmark') else 0.5
+         rect = False if task == 'benchmark' else pt  # square inference for benchmarks
+         task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
++        rect = False if os.environ.get("VAISW_WORKAROUND_DISABLE_RECT") else rect
+         dataloader = create_dataloader(data[task],
+-                                       imgsz,
++                                       (h,w),
+                                        batch_size,
+                                        stride,
+                                        single_cls,
+                                        pad=pad,
+                                        rect=rect,
+                                        workers=workers,
++                                       nbImages=nbImages,
+                                        prefix=colorstr(f'{task}: '))[0]
+ 
+     seen = 0
+@@ -189,21 +195,122 @@ def run(
+     loss = torch.zeros(3, device=device)
+     jdict, stats, ap, ap_class = [], [], [], []
+     callbacks.run('on_val_start')
+-    pbar = tqdm(dataloader, desc=s, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')  # progress bar
++    pbar = tqdm(dataloader, desc=s) #, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')  # progress bar
++
++    if os.environ.get('VAISW_WORKAROUND_ZERO_COPY') or os.environ.get('VAISW_WORKAROUND_NATIVE'):
++        import VART
++        model = VART.Runner(snapshot_dir=os.environ.get('VAISW_SNAPSHOT_DIRECTORY'))
++
++        if os.environ.get('VAISW_WORKAROUND_ZERO_COPY'):
++            if model.set_input_zero_copy(True):
++                raise AttributeError(
++                    "Cannot modify native format of all input tensors. "
++                    "At least one tensor is linked to a CPU node.")
++            # Allocate native buffers capable of holding data
++            zero_copy_buffer = model.alloc_ddr_bufs()
++
++            if model.set_output_zero_copy(True):
++                raise AttributeError(
++                    "Cannot modify native format of all output tensors. "
++                    "At least one tensor is linked to a CPU node.")
++
++        if os.environ.get('VAISW_WORKAROUND_NATIVE'):
++            if model.set_output_native(True):
++                raise AttributeError(
++                    "Cannot modify native format of all output tensors. "
++                    "At least one tensor is linked to a CPU node.")
++
++        plots=False
++
+     for batch_i, (im, targets, paths, shapes) in enumerate(pbar):
+         callbacks.run('on_val_batch_start')
+         t1 = time_sync()
+         if cuda:
+             im = im.to(device, non_blocking=True)
+             targets = targets.to(device)
+-        im = im.half() if half else im.float()  # uint8 to fp16/32
+-        im /= 255  # 0 - 255 to 0.0 - 1.0
++        if not os.environ.get('VAISW_WORKAROUND_UINT_INPUT'):
++            im = im.half() if half else im.float()  # uint8 to fp16/32
++        if not os.environ.get('VAISW_WORKAROUND_MOVE_IMGSCALE') and not os.environ.get('VAISW_WORKAROUND_SKIP_PREPROC'):
++            im /= 255.0  # 0 - 255 to 0.0 - 1.0
++        if saved_model:
++            im_transposed = im.numpy().transpose(0, 2, 3, 1)
+         nb, _, height, width = im.shape  # batch size, channels, height, width
+         t2 = time_sync()
+         dt[0] += t2 - t1
+ 
+-        # Inference
+-        out, train_out = model(im) if training else model(im, augment=augment, val=True)  # inference, loss outputs
++        # Run model
++        if os.environ.get('VAISW_WORKAROUND_ZERO_COPY') or os.environ.get('VAISW_WORKAROUND_NATIVE'):
++            input_shape_formats = model.input_shape_formats
++            im = [im.numpy()]
++
++            # Quantize
++            im = [
++                (arr * coeff).round().clip(min=-128, max=127).astype(dtype) if (coeff != -1) else arr
++                for arr, coeff, dtype in zip(im, model.input_coeffs, model.input_native_types)
++            ]
++
++            # Conversion to NHWC
++            im = [
++                np.transpose(d, (0, 2, 3, 1)) for d in im
++            ]
++
++            I = len(im)
++            if os.environ.get('VAISW_WORKAROUND_ZERO_COPY'):
++                # Copy to buffer
++                for i in range(I):
++                    N = im[i].shape[0] # batch size
++                    for n in range(N): # for each batch
++                        np.copyto(zero_copy_buffer[n * I + i], im[i][n])
++
++                # Override original data
++                im = zero_copy_buffer
++            else:
++                for i in range(I): # for each input
++                    big_pixel = 8 if im[i].shape[3] > 4 else 4
++
++                    # Build strides
++                    strides = [
++                        im[i].shape[1]
++                        * im[i].shape[2]
++                        * big_pixel
++                        * model.input_native_types[i].itemsize,
++                        im[i].shape[2]
++                        * big_pixel
++                        * model.input_native_types[i].itemsize,
++                        big_pixel
++                        * model.input_native_types[i].itemsize,
++                        model.input_native_types[i].itemsize,
++                    ]
++
++                    # Build a base array large enough to contain native data
++                    base_array = np.arange(
++                        im[i].shape[0]
++                        * strides[0],
++                        dtype=model.input_native_types[i])
++
++                    # Create an array with native strides and copy data into it
++                    tmp = im[i]
++                    im[i] = np.lib.stride_tricks.as_strided(
++                        base_array,
++                        shape=im[i].shape,
++                        strides=strides,
++                    )
++                    np.copyto(im[i], tmp)
++
++            out = model(im)
++
++            if os.environ.get('VAISW_WORKAROUND_ZERO_COPY'):
++                out = torch.tensor(np.array([out]))
++            else:
++                out = torch.tensor(out)
++
++        elif saved_model:
++            out = model.model(im_transposed)
++            out = out.numpy()
++            out[..., :4] *= [w, h, w, h]  # xywh normalized to pixels
++            out = torch.tensor(out)
++        else:
++            out = model(im) if training else model(im, augment=augment)  # inference, loss outputs
+         dt[1] += time_sync() - t2
+ 
+         # Loss
+@@ -282,7 +389,7 @@ def run(
+     # Print speeds
+     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
+     if not training:
+-        shape = (batch_size, 3, imgsz, imgsz)
++        shape = (batch_size, 3, h, w)
+         LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}' % t)
+ 
+     # Plots
+@@ -293,37 +400,44 @@ def run(
+     # Save JSON
+     if save_json and len(jdict):
+         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
+-        anno_json = str(Path(data.get('path', '../coco')) / 'annotations/instances_val2017.json')  # annotations json
++        anno_json = str(Path(data.get('path', '../coco')) / 'instances_val2017.json')  # annotations json
+         pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
+         LOGGER.info(f'\nEvaluating pycocotools mAP... saving {pred_json}...')
+         with open(pred_json, 'w') as f:
+             json.dump(jdict, f)
+ 
+-        try:  # https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocoEvalDemo.ipynb
+-            check_requirements(['pycocotools'])
+-            from pycocotools.coco import COCO
+-            from pycocotools.cocoeval import COCOeval
+-
+-            anno = COCO(anno_json)  # init annotations api
+-            pred = anno.loadRes(pred_json)  # init predictions api
+-            eval = COCOeval(anno, pred, 'bbox')
+-            if is_coco:
+-                eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.im_files]  # image IDs to evaluate
+-            eval.evaluate()
+-            eval.accumulate()
+-            eval.summarize()
+-            map, map50 = eval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
+-        except Exception as e:
+-            LOGGER.info(f'pycocotools unable to run: {e}')
++        if not os.environ.get('VAISW_WORKAROUND_SKIP_COCOEVAL'):
++            try:  # https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocoEvalDemo.ipynb
++                check_requirements(['pycocotools'])
++                from pycocotools.coco import COCO
++                from pycocotools.cocoeval import COCOeval
++
++                anno = COCO(anno_json)  # init annotations api
++                pred = anno.loadRes(pred_json)  # init predictions api
++                eval = COCOeval(anno, pred, 'bbox')
++                if is_coco:
++                    eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.im_files]  # image IDs to evaluate
++                eval.evaluate()
++                eval.accumulate()
++                eval.summarize()
++                map, map50 = eval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
++            except Exception as e:
++                LOGGER.info(f'pycocotools unable to run: {e}')
+ 
+     # Return results
+-    model.float()  # for training
++    if not os.environ.get('VAISW_WORKAROUND_ZERO_COPY') and not os.environ.get('VAISW_WORKAROUND_NATIVE'):
++        model.float()  # for training
+     if not training:
+         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
+         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
+     maps = np.zeros(nc) + map
+     for i, c in enumerate(ap_class):
+         maps[c] = ap[i]
++    if threshold is not None:
++        if map50 >= threshold:
++            print("\033[92m[SUCCESS]\033[0m mAP50 %.3f >= %.3f (threshold)" % (map50, threshold))
++        else:
++            sys.exit("\033[91m[FAIL]\033[0m mAP50 %.3f < %.3f (threshold)" % (map50, threshold))
+     return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+ 
+ 
+@@ -331,8 +445,8 @@ def parse_opt():
+     parser = argparse.ArgumentParser()
+     parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
+     parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov5s.pt', help='model.pt path(s)')
+-    parser.add_argument('--batch-size', type=int, default=32, help='batch size')
+-    parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
++    parser.add_argument('--batch-size', '--batchSize', '--batch', type=int, default=1, help='batch size')
++    parser.add_argument('--imgsz', '--img', '--img-size', '--inputSize', type=str, default="640x640", help='inference size (pixels)')
+     parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
+     parser.add_argument('--iou-thres', type=float, default=0.6, help='NMS IoU threshold')
+     parser.add_argument('--task', default='val', help='train, val, test, speed or study')
+@@ -350,6 +464,8 @@ def parse_opt():
+     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
+     parser.add_argument('--dnn', action='store_true', help='use OpenCV DNN for ONNX inference')
++    parser.add_argument('--nbImages', type=int, default=None, help='number of images to calculate mAP on')
++    parser.add_argument('--threshold', type=float, default=None, help='Threshold under which this script fails')
+     opt = parser.parse_args()
+     opt.data = check_yaml(opt.data)  # check YAML
+     opt.save_json |= opt.data.endswith('coco.yaml')

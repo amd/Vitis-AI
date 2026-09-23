@@ -1,0 +1,865 @@
+diff --git a/eval_ssd.py b/eval_ssd.py
+index 5923915d0574372c0f76e8100ecb4e7713e2ceb5..ae9a6fe83af3e43f6926c5083f8ba6df243dd5b3 100644
+--- a/eval_ssd.py
++++ b/eval_ssd.py
+@@ -16,6 +16,7 @@ from vision.ssd.mobilenet_v2_ssd_lite import create_mobilenetv2_ssd_lite, create
+ from vision.ssd.mobilenetv3_ssd_lite import create_mobilenetv3_large_ssd_lite, create_mobilenetv3_small_ssd_lite
+ 
+ 
++
+ parser = argparse.ArgumentParser(description="SSD Evaluation on VOC Dataset.")
+ parser.add_argument('--net', default="vgg16-ssd",
+                     help="The network architecture, it should be of mb1-ssd, mb1-ssd-lite, mb2-ssd-lite or vgg16-ssd.")
+@@ -32,6 +33,10 @@ parser.add_argument("--iou_threshold", type=float, default=0.5, help="The thresh
+ parser.add_argument("--eval_dir", default="eval_results", type=str, help="The directory to store evaluation results.")
+ parser.add_argument('--mb2_width_mult', default=1.0, type=float,
+                     help='Width Multiplifier for MobilenetV2')
++parser.add_argument('--nb_imgs', type=int, default=None,
++                    help='Number of images to evaluate on')
++parser.add_argument('--batch', type=int, default=1,
++                    help='Batch size')
+ args = parser.parse_args()
+ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() and args.use_cuda else "cpu")
+ 
+@@ -171,21 +176,30 @@ if __name__ == '__main__':
+         sys.exit(1)
+ 
+     results = []
+-    for i in range(len(dataset)):
++    batch_data = []
++    ind_data = []
++    for i in range(args.nb_imgs if args.nb_imgs else len(dataset)):
+         print("process image", i)
+         timer.start("Load Image")
+         image = dataset.get_image(i)
++        batch_data.append(image)
++        ind_data.append(i)
++        if len(batch_data) < args.batch and i != (args.nb_imgs if args.nb_imgs else len(dataset)) - 1:
++            continue
+         print("Load Image: {:4f} seconds.".format(timer.end("Load Image")))
+         timer.start("Predict")
+-        boxes, labels, probs = predictor.predict(image)
++        boxes, labels, probs = predictor.predict(batch_data)
+         print("Prediction: {:4f} seconds.".format(timer.end("Predict")))
+-        indexes = torch.ones(labels.size(0), 1, dtype=torch.float32) * i
+-        results.append(torch.cat([
+-            indexes.reshape(-1, 1),
+-            labels.reshape(-1, 1).float(),
+-            probs.reshape(-1, 1),
+-            boxes + 1.0  # matlab's indexes start from 1
+-        ], dim=1))
++        for i, ind in enumerate(ind_data):
++            indexes = torch.ones(labels.size(1), 1, dtype=torch.float32) * ind
++            results.append(torch.cat([
++                indexes.reshape(-1, 1),
++                labels[i].reshape(-1, 1).float(),
++                probs[i].reshape(-1, 1),
++                boxes[i] + 1.0  # matlab's indexes start from 1
++            ], dim=1))
++        batch_data = []
++        ind_data = []
+     results = torch.cat(results)
+     for class_index, class_name in enumerate(class_names):
+         if class_index == 0: continue  # ignore background
+diff --git a/mipso_custom.py b/mipso_custom.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3baaec85989aa157d96b77501df0301ac54198a0
+--- /dev/null
++++ b/mipso_custom.py
+@@ -0,0 +1,436 @@
++
++# ===========================================================
++# Copyright(C) 2023-2024 Advanced Micro Devices Inc.  All Rights Reserved.
++# ===========================================================
++
++from collections import deque
++from threading import Thread
++import cv2
++import os
++
++import numpy as np
++import PIL
++############################################################
++############################################################
++
++# the application will open several window and place them on the desktop at
++# specific location. The below variables allow to configure the location
++
++# this is the X/Y offset for window position
++WINDOW_X_OFFSET         = int(os.environ.get("WINDOW_X_OFFSET")         or 0)
++WINDOW_Y_OFFSET         = int(os.environ.get("WINDOW_Y_OFFSET")         or 0)
++
++# this is the number of window per row
++WINDOW_PER_ROW          = int(os.environ.get("WINDOW_PER_ROW")          or 3)
++
++# this is a scaling factor to reduce the window dimension (2: window will be 2x smaller)
++WINDOW_RATIO            = float(os.environ.get("WINDOW_RATIO")          or 1)
++
++# this force the width and height of the video
++WINDOW_WIDTH            = int(os.environ.get("WINDOW_WIDTH")            or 0)
++WINDOW_HEIGHT           = int(os.environ.get("WINDOW_HEIGHT")           or 0)
++
++# this is the index position to place a window so a slide can be displayed. For instance, in a 3x3 configuration use 4 to let the center empty
++WINDOW_SLIDE_IDX        = int(os.environ.get("WINDOW_SLIDE_IDX")        or 4)
++
++# this is the number of batch (usually the number of cores) per system
++BATCH_PER_SYSTEM        = int(os.environ.get("BATCH_PER_SYSTEM")        or 1)
++
++# this is the number of system per board
++SYSTEM_PER_BOARD        = int(os.environ.get("SYSTEM_PER_BOARD")        or 2)
++
++# show info/FPS by default
++SHOW_INFO               = int(os.environ.get("SHOW_INFO")               or 0)
++SHOW_FPS                = int(os.environ.get("SHOW_FPS")                or 0)
++
++
++# enable the MJPG mode
++OPENCV_CAMERA_MJPG      = int(os.environ.get("OPENCV_CAMERA_MJPG")      or 1)
++# force camera width/height
++OPENCV_CAMERA_WIDTH     = int(os.environ.get("OPENCV_CAMERA_WIDTH")     or 0)
++OPENCV_CAMERA_HEIGHT    = int(os.environ.get("OPENCV_CAMERA_HEIGHT")    or 0)
++
++
++############################################################
++############################################################
++
++# only for YoloV2:
++def mipso_get_interpolation():
++    return cv2.INTER_NEAREST
++    return cv2.INTER_LINEAR
++    #return cv2.INTER_LANCZOS4
++
++# only for YoloV2
++def mipso_camera_reduce_delay():
++    return False # normal execution: capture / inference / display from capture
++    return True # reduce delay execution: inference on prev capture / capture / display from capture using previous inference
++
++# only for YoloV2
++def mipso_box_rounding(i):
++    return i
++    round = 20
++    return ((i + round) // (2*round) ) * 2*round
++
++def mipso_camera_init(c):
++    print ("Initial camera resolution {}x{} @ {}".format(
++        c.get(cv2.CAP_PROP_FRAME_WIDTH),
++        c.get(cv2.CAP_PROP_FRAME_HEIGHT),
++        c.get(cv2.CAP_PROP_FPS)))
++    if OPENCV_CAMERA_WIDTH != 0:
++        c.set(cv2.CAP_PROP_FRAME_WIDTH , OPENCV_CAMERA_WIDTH)
++    if OPENCV_CAMERA_HEIGHT != 0:
++        c.set(cv2.CAP_PROP_FRAME_HEIGHT , OPENCV_CAMERA_HEIGHT)
++    if OPENCV_CAMERA_MJPG != 0:
++        c.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
++    print ("Using camera resolution {}x{} @ {}".format(
++        c.get(cv2.CAP_PROP_FRAME_WIDTH),
++        c.get(cv2.CAP_PROP_FRAME_HEIGHT),
++        c.get(cv2.CAP_PROP_FPS)))
++
++def mipso_window_init(idx, width, height):
++    cv2.namedWindow(str(idx), cv2.WINDOW_GUI_NORMAL | cv2.WINDOW_FREERATIO)
++    #cv2.namedWindow(str(idx), cv2.WINDOW_NORMAL)
++
++    if WINDOW_WIDTH != 0 and WINDOW_HEIGHT != 0:
++        cur_width = WINDOW_WIDTH
++        cur_height = WINDOW_HEIGHT
++    else:
++        cur_width = int(width // WINDOW_RATIO)
++        cur_height = int(height // WINDOW_RATIO)
++
++    cv2.resizeWindow(str(idx), (cur_width, cur_height))
++    board=0
++    system=0
++    core=0
++    if 'VAISW_RUNSESSION_ENABLECORES' in os.environ and os.environ['VAISW_RUNSESSION_ENABLECORES'].startswith('B'):
++        c = os.environ['VAISW_RUNSESSION_ENABLECORES'].split(':')[0].split('_')
++        if len(c[0]) > 0:
++            board = int(c[0][1:])
++        if len(c) > 1:
++            system = int(c[1][1:])
++        if len(c) > 2:
++            core = int(c[2][1:])
++
++    cur_idx = idx + core + BATCH_PER_SYSTEM * ( system + SYSTEM_PER_BOARD * board)
++    # in case we want to put slide somewhere
++    if cur_idx >= WINDOW_SLIDE_IDX:
++        cur_idx = cur_idx + 1
++    pos_x = WINDOW_X_OFFSET + int( (cur_idx % WINDOW_PER_ROW)*cur_width)
++    pos_y = WINDOW_Y_OFFSET + int( 0 + (cur_idx // WINDOW_PER_ROW)*cur_height)
++
++    print("Move window {} {}x{} for system {} @ ({} , {})".format(idx, cur_width, cur_height, system, pos_x, pos_y))
++    cv2.moveWindow(str(idx), pos_x, pos_y)
++
++def mipso_parse_input(file):
++    mode='file'
++    for part in file.split(':'):
++        if 'camera' == part:
++            mode='camera'
++            continue
++        if part.startswith('http'):
++            mode=part
++            continue
++        if part.isdigit():
++            yield mode, int(part)
++        elif mode.startswith('http'):
++            yield 'http', mode + ':' + part
++            mode='file'
++        else:
++            mode='file'
++            yield mode, part
++
++
++class captureDirectory(object):
++    def __init__(self, path):
++        self.path = path
++        self.l = iter([os.path.join(self.path, x) for x in sorted(os.listdir(self.path))])
++
++    def isOpened(self):
++        return os.path.isdir(self.path)
++    def get(self, prop):
++        # only return the FPS
++        return 1
++    def read(self):
++        try:
++            i = next(self.l)
++        except StopIteration:
++            return False, None
++        return i, cv2.imread(i)
++
++class liveCapture(object):
++    def __init__(self,src):
++        self.stop = False
++        self.status = False
++        self.frames = deque([])
++        self.capture = cv2.VideoCapture(src)
++        #self.capture.set(cv2.CAP_PROP_BUFFERSIZE,2)
++        self.FPS = self.capture.get(cv2.CAP_PROP_FPS)
++        self.thread1 = Thread(target = self.bg_read, args=())
++        self.thread1.daemon = True
++        self.thread1.start()
++        self.readFps = 1
++    def bg_read(self):
++        while not self.stop:
++            if self.capture.isOpened():
++                self.status, frame = self.capture.read()
++                if self.status:
++                    self.frames.append(frame)
++    def isOpened(self):
++        return self.capture.isOpened()
++    def read(self):
++        # do a kind of adaptative fast forward with input buffer of 200 images
++        l = len(self.frames)
++        if l > 200:
++            self.readFps = 1 << ((l//100)-1)
++        elif l < 200:
++            self.readFps = 1
++        if len(self.frames) > 0:
++            f = self.frames[0]
++            for _ in range(int(self.readFps)):
++                # keep always 1 frame in the buffer
++                if len(self.frames) == 1:
++                    break
++                self.frames.popleft()
++            return True, f
++        else:
++            return False, None
++    def get(self, prop):
++        # only return the FPS
++        return int(self.FPS)
++    def __del__(self):
++        self.stop = True
++        self.thread1.join()
++
++
++def mipso_opencv_capture(file):
++    """
++    return a list of opencv capture device
++    """
++    camera = []
++    # TODO: use a better handling of the different mode (class)
++    if 'camera' == file:
++        # open all camera
++        camera_idx=0
++        while True:
++            c = cv2.VideoCapture(camera_idx)
++            if c.isOpened() == False:
++                break
++            camera.append(c)
++            mipso_camera_init(c)
++            camera_idx = camera_idx + 1
++    else:
++        for mode, url in mipso_parse_input(file):
++            if mode.startswith('http') and 'youtube' in url:
++                import pafy
++                option = url.split('@')
++                v = pafy.new(option[0])
++                resolution = [s.resolution for s in v.allstreams]
++                if option[-1] == 'list':
++                    print(f'Available resolution for {option[0]} are:')
++                    print('\n'.join(resolution))
++                    exit(0)
++                elif option[-1] in resolution:
++                    url = v.allstreams[resolution.index(option[-1])].url
++                else:
++                    url = v.getbest().url
++                if 'live' in option:
++                    c = liveCapture(url)
++                else:
++                    c = cv2.VideoCapture(url)
++            elif os.path.isdir(url):
++                c = captureDirectory(url)
++            else:
++                c = cv2.VideoCapture(url)
++            if c.isOpened() == False:
++                print("Error opening source {} {}".format(mode, url))
++                break
++            if mode == 'camera':
++                mipso_camera_init(c)
++            camera.append(c)
++
++    assert len(camera) > 0, 'Cannot capture source'
++    return camera
++
++# TODO: create a Mipso class
++showHelp = False
++pauseMode = False
++showWindowInfo = SHOW_INFO != 0
++showFps = SHOW_FPS != 0
++
++def mipso_process_key(key):
++    global showHelp
++    global pauseMode
++    global showWindowInfo
++    global showFps
++
++    if pauseMode:
++        print ("pause mode, press 'p' to play or any other key to move to the next frame")
++    while True:
++        if key == 27:
++            return key
++        if key > 0 and chr(key) in 'h':
++            showHelp = not showHelp
++        if key > 0 and chr(key) in 'p':
++            pauseMode = not pauseMode
++        if key > 0 and chr(key) in 'i':
++            showWindowInfo = not showWindowInfo
++        if key > 0 and chr(key) in 'f':
++            showFps = not showFps
++        if not pauseMode or key != -1:
++            break
++        key = cv2.waitKey(1)
++    return key
++
++def print_help(frame):
++
++    HELP="\
++Key usage:\n\
++    ESC : exit the demo\n\
++    h   : toggle displaying this help\n\
++    p   : pause the video (any other key will do frame by frame)\n\
++    i   : toggle showing network information\n\
++    f   : toggle showing FPS\n\
++"
++    scale = 1
++    if frame.shape[1] < 1240:
++        scale = scale * frame.shape[1] / 1240
++    for y, line in enumerate(HELP.split('\n')):
++        cv2.putText(frame, line, (20, int(scale*(200 + y * 40))), cv2.FONT_HERSHEY_SIMPLEX,
++                    scale, (255,255,0), 1)
++
++
++def print_text(frame, x, y, text, scale=1.2):
++    font                   = cv2.FONT_HERSHEY_SIMPLEX
++    bottomLeftCornerOfText = (10,500)
++    fontScale              = scale
++    fontColor              = (0,0,255)
++    lineType               = 2 if scale >= 1 else 1
++
++    cv2.putText(frame, text, (x, y),
++        font,
++        fontScale,
++        fontColor,
++        lineType)
++
++def mipso_window_info(f, idx, name, latency):
++    if showHelp:
++        print_help(f)
++    if showWindowInfo:
++        scale = 1
++        if f.shape[1] < 500:
++            scale = scale * f.shape[1] / 500
++        if showFps:
++            print_text( f, 10, int(scale*30), "Vaisw: {} FPS={}".format(name, str(int(1/latency))), scale )
++        else:
++            print_text( f, 10, int(scale*30), "Vaisw: {}".format(name), scale)
++        #print_text(f, 10, 50, "Latency is: " + str(int(1000*latency)) + " ms. FPS is: " + str(int(1/latency)) + " img/s")
++
++#inputSize is a tuple (x, y), meaning (width, height). Flag should respect that format
++#resize_function is a caller-provided function that takes image, x and y as input and returns the resized image
++#get_size_function is a caller-provided function that returns the size (x, y) of the input image to handle cases where the input image is not know
++inputSize = None
++def mipso_resize_input(flag_inputSize, input, resize_function, get_size_function=None):
++    global inputSize
++
++    assert callable(resize_function), 'Expected a resize function as third argument'
++
++    def parse_inputSize(inputSize_string):
++        return tuple( int(dim) for dim in inputSize_string.split('x') )
++
++    if flag_inputSize is None:
++        out_image = input
++    elif flag_inputSize == "auto":
++        if inputSize is None:
++            if isinstance(input, PIL.Image.Image):
++                inputSize = input.size
++            elif isinstance(input, np.ndarray):
++                inputSize = input.shape[1::-1]
++            elif get_size_function is not None:
++                inputSize = get_size_function(input)
++            else:
++                raise TypeError(f'Unknown image type {type(input)}, cannot guess shape of first image')
++            out_image = input
++        else:
++            out_image = resize_function(input, x=inputSize[0], y=inputSize[1])
++    else:
++        if inputSize is None:
++            inputSize = parse_inputSize(flag_inputSize)
++        out_image = resize_function(input, x=inputSize[0], y=inputSize[1])
++    return out_image
++
++
++class MipsoSaver:
++    """
++    This class is used to ease porting of a consistent saving functionality on all Mipsology demos
++
++    Class is initizalized with the following values:
++    out_path       : String that represents the output base path. It is a folder that will contain the video or the images. If it doesn't exist It will be created
++    as_images      : Boolean that indicates that we want to write images and not a video
++    dump_interval  : Integer that controls the frequency at which images will be saved on disk to not fill memory
++    fourcc         : Cv2 fourcc codec to save video
++    fps            : Fps of the video file
++    video_filename : Name of the video file
++
++    Class contains the following methods:
++    add            : Method that receives frames
++                     in video mode, store the frames in an internal buffer
++                     in as_images mode, also accepts a filename parameter and will periodically (based on dump_interval class attribute) call the save method
++    save           : Method to call to save added frames to disk as video or images.
++    """
++    def __init__(self, out_path, as_images=False, dump_interval=100, fourcc=None, fps=30, video_filename='output.avi'):
++        self.out_path = out_path
++        self.as_images = as_images
++        # as_images == True related options (images mode)
++        self.dump_interval = dump_interval
++        # as_images == False related options (video mode)
++        if not self.as_images:
++            self.fourcc = fourcc if fourcc else cv2.VideoWriter_fourcc(*'XVID')
++        self.fps = fps
++        self.video_filename = video_filename
++        self.buffer = {} if self.as_images else []
++        self.frame_counter = 0
++
++        if self.out_path:
++            if not os.path.exists(self.out_path):
++                os.makedirs(self.out_path)
++
++    def add(self, frame, filename=None):
++        if not self.out_path or self.out_path == '/dev/null':
++            return
++
++        if self.as_images:
++            if not filename:
++                filename = f'frame_{self.frame_counter}.png'
++                self.frame_counter += 1
++            self.buffer.update({filename : frame})
++            if len(self.buffer) >= self.dump_interval:
++                self.save()
++        else:
++            self.buffer.append(frame)
++
++    def save(self):
++        if not self.out_path or self.out_path == '/dev/null':
++            return
++
++        if self.as_images:
++            for filename, image in self.buffer.items():
++                if isinstance(image, np.ndarray):
++                    image = image if image.dtype == 'uint8' else image.astype('uint8')
++                cv2.imwrite(os.path.join(self.out_path, filename), image)
++        else:
++            if self.buffer:
++                vidwri = cv2.VideoWriter(
++                            os.path.join(self.out_path,self.video_filename),
++                            self.fourcc,
++                            self.fps,
++                            (self.buffer[0].shape[1], self.buffer[0].shape[0])
++                            )
++                for img in self.buffer:
++                    if isinstance(img, np.ndarray):
++                        img = img if img.dtype == 'uint8' else img.astype('uint8')
++                    else:
++                        print(f'Warning unknown type {type(img)}, saving to video might not work')
++                    vidwri.write(img)
++                vidwri.release()
++
++        self.buffer.clear()
+diff --git a/run b/run
+new file mode 100755
+index 0000000000000000000000000000000000000000..94e50de0e0062067287cb55e62b3a440cfca5b78
+--- /dev/null
++++ b/run
+@@ -0,0 +1,35 @@
++#! /bin/bash
++
++export VAISW_WORKAROUND_INTERCEPT_FORWARD=1
++
++input=$1
++shift
++
++net="mb2-ssd-lite"
++model=$( ls models/$net*.pth )
++
++if [ "$1" == "mb1-ssd" ]
++then
++  net=$1
++  shift
++  model=$( ls models/mobilenet-v1-ssd*.pth )
++elif [ "$1" == "mb2-ssd-lite" ]
++then
++  net=$1
++  shift
++  model=$( ls models/$net*.pth )
++elif [ "$1" == "vgg16-ssd" ]
++then
++  net=$1
++  shift
++  model=$( ls models/vgg16_*.pth )
++fi
++
++cmdLine="--net $net --trained_model $model --label_file models/voc-model-labels.txt"
++
++if [[ ${input%:*} == "evaluate" ]]; then
++  dataset=${input#*:}
++  python3 eval_ssd.py          $cmdLine --dataset $dataset "$@"
++else
++  python3 run_ssd_live_demo.py $cmdLine "$input" "$@"
++fi
+diff --git a/run_ssd_live_demo.py b/run_ssd_live_demo.py
+index 9a3fcfc3b7a5514c5e8b043db0c6fb294439d3ff..c841928ee764eee1859732be59efd8d843a28726 100644
+--- a/run_ssd_live_demo.py
++++ b/run_ssd_live_demo.py
+@@ -8,19 +8,42 @@ from vision.utils.misc import Timer
+ import cv2
+ import sys
+ 
+-if len(sys.argv) < 4:
+-    print('Usage: python run_ssd_example.py <net type>  <model path> <label path> [video file]')
+-    sys.exit(0)
+-net_type = sys.argv[1]
+-model_path = sys.argv[2]
+-label_path = sys.argv[3]
+-
+-if len(sys.argv) >= 5:
+-    cap = cv2.VideoCapture(sys.argv[4])  # capture from file
+-else:
+-    cap = cv2.VideoCapture(0)   # capture from camera
+-    cap.set(3, 1920)
+-    cap.set(4, 1080)
++import argparse
++import os
++import mipso_custom
++
++parser = argparse.ArgumentParser(description="SSD Evaluation on VOC Dataset.")
++parser.add_argument('--net', default="mb2-ssd-lite",
++                    help="The network architecture, it should be of mb1-ssd, mb1-ssd-lite, mb2-ssd-lite or vgg16-ssd.")
++parser.add_argument('--trained_model', type=str, default="models/mb2-ssd-lite-mp-0_686.pth",
++                    help="Path to model used (should be compliant with net)")
++parser.add_argument('--label_file', default="models/voc-models-labels.txt",
++                    type=str, help="The label file path.")
++parser.add_argument('source', type=str)
++parser.add_argument('--batch', type=int, default=1, help="batch size")
++parser.add_argument('--out_file', type=str, default=None, help="output path for saving images/videos")
++parser.add_argument('--loop', action='store_true', help='Looping on videos')
++args = parser.parse_args()
++
++source     = args.source
++net_type   = args.net
++model_path = args.trained_model
++label_path = args.label_file
++batchSize  = args.batch
++out_file   = args.out_file
++
++cap = mipso_custom.mipso_opencv_capture(source)
++if len(cap) > 1:
++    batchSize = len(cap)
++
++if out_file:
++    as_imgs = os.path.isdir(source) or source.split(".")[-1].lower() in ["jpg", "png", "gif", "jpeg", "bmp"]
++    if os.path.isdir(out_file):
++        output = mipso_custom.MipsoSaver(out_file, as_images=as_imgs)
++    else:
++        out_dir, out_filename = os.path.split(out_file)
++        out_dir = "." if not out_dir else out_dir
++        output = mipso_custom.MipsoSaver(out_dir, video_filename=out_filename, as_images=as_imgs)
+ 
+ class_names = [name.strip() for name in open(label_path).readlines()]
+ num_classes = len(class_names)
+@@ -59,30 +82,75 @@ else:
+     print("The net type is wrong. It should be one of vgg16-ssd, mb1-ssd and mb1-ssd-lite.")
+     sys.exit(1)
+ 
++batch_data = []
++orig_images = []
++firstShow = True
+ 
+ timer = Timer()
+-while True:
+-    ret, orig_image = cap.read()
+-    if orig_image is None:
+-        continue
+-    image = cv2.cvtColor(orig_image, cv2.COLOR_BGR2RGB)
++while len(cap) > 0:
++    for video in cap:
++        ret, orig_image = video.read()
++        if not ret:
++            if args.loop:
++                video.set(cv2.CAP_PROP_POS_FRAMES, 0)
++                print("Reached last frame; starting over")
++                ret, orig_image = video.read()
++            else:
++                cap = []
++                break
++
++        if not (orig_image is None or orig_image.size == 0):
++            orig_images.append(orig_image)
++
++            image = cv2.cvtColor(orig_image, cv2.COLOR_BGR2RGB)
++            batch_data.append(image)
++
++    if len(batch_data) < batchSize:
++        if len(cap) > 0:
++            continue
++        elif len(batch_data) == 0:
++            break
++
+     timer.start()
+-    boxes, labels, probs = predictor.predict(image, 10, 0.4)
++    boxes, labels, probs = predictor.predict(batch_data, 10, 0.4)
+     interval = timer.end()
+     print('Time: {:.2f}s, Detect Objects: {:d}.'.format(interval, labels.size(0)))
+     for i in range(boxes.size(0)):
+-        box = boxes[i, :]
+-        label = f"{class_names[labels[i]]}: {probs[i]:.2f}"
+-        cv2.rectangle(orig_image, (box[0], box[1]), (box[2], box[3]), (255, 255, 0), 4)
+-
+-        cv2.putText(orig_image, label,
+-                    (box[0]+20, box[1]+40),
+-                    cv2.FONT_HERSHEY_SIMPLEX,
+-                    1,  # font scale
+-                    (255, 0, 255),
+-                    2)  # line type
+-    cv2.imshow('annotated', orig_image)
+-    if cv2.waitKey(1) & 0xFF == ord('q'):
+-        break
+-cap.release()
++        for j in range(boxes.size(1)):
++            # ignore background
++            if labels[i, j] == 0:
++                continue
++            box = boxes[i, j, :]
++            label = f"{class_names[labels[i, j]]}: {probs[i, j]:.2f}"
++            cv2.rectangle(orig_images[i], (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 255, 0), 4)
++
++            cv2.putText(orig_images[i], label,
++                        (int(box[0]+20), int(box[1]+40)),
++                        cv2.FONT_HERSHEY_SIMPLEX,
++                        1,  # font scale
++                        (255, 0, 255),
++                        2)  # line type
++
++        if out_file:
++            output.add(orig_images[i])
++        else:
++            if firstShow:
++                mipso_custom.mipso_window_init(i, orig_images[i].shape[1], orig_images[i].shape[0])
++            mipso_custom.mipso_window_info(orig_images[i], i, "PyTorch SSD " + net_type.upper(), interval)
++            cv2.imshow(str(i), orig_images[i])
++
++    if not out_file:
++        choice = cv2.waitKey(1)
++        choice = mipso_custom.mipso_process_key(choice)
++        if choice == 27:
++            break
++
++    orig_images = []
++    batch_data = []
++    firstShow = False
++
++if out_file:
++    print("No more input, encoding capture...")
++    output.save()
++
+ cv2.destroyAllWindows()
+diff --git a/vision/ssd/fpn_mobilenetv1_ssd.py b/vision/ssd/fpn_mobilenetv1_ssd.py
+index af2d2166a96a82e7f610b07353d8b55cf8597d88..99c7a64e3fd0a42a603c75fda89775065d82205e 100644
+--- a/vision/ssd/fpn_mobilenetv1_ssd.py
++++ b/vision/ssd/fpn_mobilenetv1_ssd.py
+@@ -63,7 +63,7 @@ def create_fpn_mobilenetv1_ssd(num_classes):
+                extras, classification_headers, regression_headers)
+ 
+ 
+-def create_fpn_mobilenetv1_ssd_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=torch.device('cpu')):
++def create_fpn_mobilenetv1_ssd_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=None):
+     predictor = Predictor(net, config.image_size, config.image_mean, config.priors,
+                           config.center_variance, config.size_variance,
+                           nms_method=nms_method,
+diff --git a/vision/ssd/mobilenet_v2_ssd_lite.py b/vision/ssd/mobilenet_v2_ssd_lite.py
+index 6eab22ac57367455c7b6ec5eed6f368c6016198d..1fdb17addecc78c5f2518503782b85223962049e 100644
+--- a/vision/ssd/mobilenet_v2_ssd_lite.py
++++ b/vision/ssd/mobilenet_v2_ssd_lite.py
+@@ -59,7 +59,7 @@ def create_mobilenetv2_ssd_lite(num_classes, width_mult=1.0, use_batch_norm=True
+                extras, classification_headers, regression_headers, is_test=is_test, config=config)
+ 
+ 
+-def create_mobilenetv2_ssd_lite_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=torch.device('cpu')):
++def create_mobilenetv2_ssd_lite_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=None):
+     predictor = Predictor(net, config.image_size, config.image_mean,
+                           config.image_std,
+                           nms_method=nms_method,
+diff --git a/vision/ssd/mobilenetv3_ssd_lite.py b/vision/ssd/mobilenetv3_ssd_lite.py
+index 470f386a6b524db24e669ae986557f892be54154..abc86614de8bdf31060f3d83a8fbd6db9d3e759c 100644
+--- a/vision/ssd/mobilenetv3_ssd_lite.py
++++ b/vision/ssd/mobilenetv3_ssd_lite.py
+@@ -89,7 +89,7 @@ def create_mobilenetv3_small_ssd_lite(num_classes, width_mult=1.0, use_batch_nor
+                extras, classification_headers, regression_headers, is_test=is_test, config=config)
+ 
+ 
+-def create_mobilenetv3_ssd_lite_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=torch.device('cpu')):
++def create_mobilenetv3_ssd_lite_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=None):
+     predictor = Predictor(net, config.image_size, config.image_mean,
+                           config.image_std,
+                           nms_method=nms_method,
+diff --git a/vision/ssd/predictor.py b/vision/ssd/predictor.py
+index b995d1ec3ec80f1bda44b59d5a1e7cb9c17db380..0b1bd1662a25a9e8fe7756eecd34cdbc780bf0c7 100644
+--- a/vision/ssd/predictor.py
++++ b/vision/ssd/predictor.py
+@@ -3,7 +3,7 @@ import torch
+ from ..utils import box_utils
+ from .data_preprocessing import PredictionTransform
+ from ..utils.misc import Timer
+-
++import os
+ 
+ class Predictor:
+     def __init__(self, net, size, mean=0.0, std=1.0, nms_method=None,
+@@ -26,46 +26,66 @@ class Predictor:
+ 
+         self.timer = Timer()
+ 
+-    def predict(self, image, top_k=-1, prob_threshold=None):
++    def predict(self, images, top_k=-1, prob_threshold=None):
+         cpu_device = torch.device("cpu")
+-        height, width, _ = image.shape
+-        image = self.transform(image)
+-        images = image.unsqueeze(0)
++        height = torch.tensor([im.shape[0] for im in images]).reshape(-1, 1)
++        width  = torch.tensor([im.shape[1] for im in images]).reshape(-1, 1)
++        images = [self.transform(im) for im in images]
++        images = torch.stack(images)
+         images = images.to(self.device)
+         with torch.no_grad():
+             self.timer.start()
+-            scores, boxes = self.net.forward(images)
++            if os.environ.get("VAISW_WORKAROUND_INTERCEPT_FORWARD"):
++                scores, boxes = self.net(images)
++            else:
++                scores, boxes = self.net.forward(images)
+             print("Inference time: ", self.timer.end())
+-        boxes = boxes[0]
+-        scores = scores[0]
++        #boxes = boxes[0]
++        #scores = scores[0]
+         if not prob_threshold:
+             prob_threshold = self.filter_threshold
+         # this version of nms is slower on GPU, so we move data to CPU.
+         boxes = boxes.to(cpu_device)
+         scores = scores.to(cpu_device)
+         picked_box_probs = []
+-        picked_labels = []
+-        for class_index in range(1, scores.size(1)):
+-            probs = scores[:, class_index]
+-            mask = probs > prob_threshold
+-            probs = probs[mask]
+-            if probs.size(0) == 0:
+-                continue
+-            subset_boxes = boxes[mask, :]
+-            box_probs = torch.cat([subset_boxes, probs.reshape(-1, 1)], dim=1)
+-            box_probs = box_utils.nms(box_probs, self.nms_method,
+-                                      score_threshold=prob_threshold,
+-                                      iou_threshold=self.iou_threshold,
+-                                      sigma=self.sigma,
+-                                      top_k=top_k,
+-                                      candidate_size=self.candidate_size)
++        picked_labels = [[] for _ in range(len(images))]
++        for i in range(scores.size(0)):
++            box_probs = []
++            for class_index in range(1, scores.size(2)):
++                probs = scores[i][:, class_index]
++                mask = probs > prob_threshold
++                probs = probs[mask]
++                if probs.size(0) == 0:
++                    continue
++                subset_boxes = boxes[i][mask, :]
++                box_probs_i = torch.cat([subset_boxes, probs.reshape(-1, 1)], dim=1)
++                box_probs_i = box_utils.nms(box_probs_i, self.nms_method,
++                                        score_threshold=prob_threshold,
++                                        iou_threshold=self.iou_threshold,
++                                        sigma=self.sigma,
++                                        top_k=top_k,
++                                        candidate_size=self.candidate_size)
++                box_probs.append(box_probs_i)
++                picked_labels[i].extend([class_index] * box_probs_i.size(0))
++            if not box_probs:
++                box_probs = torch.zeros([1,5])
++                picked_labels[i].extend([0])
++            else:
++                box_probs = torch.cat(box_probs)
+             picked_box_probs.append(box_probs)
+-            picked_labels.extend([class_index] * box_probs.size(0))
+         if not picked_box_probs:
+             return torch.tensor([]), torch.tensor([]), torch.tensor([])
+-        picked_box_probs = torch.cat(picked_box_probs)
+-        picked_box_probs[:, 0] *= width
+-        picked_box_probs[:, 1] *= height
+-        picked_box_probs[:, 2] *= width
+-        picked_box_probs[:, 3] *= height
+-        return picked_box_probs[:, :4], torch.tensor(picked_labels), picked_box_probs[:, 4]
+\ No newline at end of file
++        # For stack, making sure each image has the same number of boxes
++        m = max(map(lambda x: x.size(0), picked_box_probs))
++        for i, bp in enumerate(picked_box_probs):
++            diff = m - bp.size(0)
++            pad = torch.zeros(diff, 5) #pad with empty
++            picked_box_probs[i] = torch.cat([bp, pad])
++            # Do the same with labels
++            picked_labels[i].extend([0] * diff)
++        picked_box_probs = torch.stack(picked_box_probs)
++        picked_box_probs[:, :, 0] = torch.mul(picked_box_probs[:, :, 0], width)
++        picked_box_probs[:, :, 1] = torch.mul(picked_box_probs[:, :, 1], height)
++        picked_box_probs[:, :, 2] = torch.mul(picked_box_probs[:, :, 2], width)
++        picked_box_probs[:, :, 3] = torch.mul(picked_box_probs[:, :, 3], height)
++        return picked_box_probs[:, :, :4], torch.tensor(picked_labels), picked_box_probs[:, :, 4]
+\ No newline at end of file
+diff --git a/vision/ssd/squeezenet_ssd_lite.py b/vision/ssd/squeezenet_ssd_lite.py
+index 947ca0231309f16309a7cbbfa98a079d0d26d684..f065e027807c2767249bc64a554e5619d866b19f 100644
+--- a/vision/ssd/squeezenet_ssd_lite.py
++++ b/vision/ssd/squeezenet_ssd_lite.py
+@@ -74,7 +74,7 @@ def create_squeezenet_ssd_lite(num_classes, is_test=False):
+                extras, classification_headers, regression_headers, is_test=is_test, config=config)
+ 
+ 
+-def create_squeezenet_ssd_lite_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=torch.device('cpu')):
++def create_squeezenet_ssd_lite_predictor(net, candidate_size=200, nms_method=None, sigma=0.5, device=None):
+     predictor = Predictor(net, config.image_size, config.image_mean,
+                           config.image_std,
+                           nms_method=nms_method,

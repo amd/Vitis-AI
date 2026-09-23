@@ -1,0 +1,10 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: VartML embedded software stack
+Description: VartML embedded software stack
+Version: @version@
+Libs: -L${libdir} -lutils -lio -lnpu_runner -lvart_ml_runner
+Cflags: -I${includedir}

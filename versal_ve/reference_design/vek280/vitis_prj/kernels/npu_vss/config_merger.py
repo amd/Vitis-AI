@@ -1,0 +1,1 @@
+../../../../common/vitis_prj/kernels/npu_vss/config_merger.py

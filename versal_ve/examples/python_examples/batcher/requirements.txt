@@ -1,0 +1,12 @@
+# Copyright(C) 2023-2024 Advanced Micro Devices Inc.  All Rights Reserved.
+# the below packages are needed for the examples and to run the batcher
+future
+torchvision
+tensorflow
+pycocotools
+lxml
+tqdm
+pillow
+opencv-python
+contextvars
+psutil

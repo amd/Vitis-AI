@@ -1,0 +1,884 @@
+diff --git a/mipso_custom.py b/mipso_custom.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9516765d677c3796d1292c26e330703adc9357db
+--- /dev/null
++++ b/mipso_custom.py
+@@ -0,0 +1,436 @@
++
++# ===========================================================
++# Copyright(C) 2023-2024 Advanced Micro Devices Inc.  All Rights Reserved.
++# ===========================================================
++
++from collections import deque
++from threading import Thread
++import cv2
++import os
++
++import numpy as np
++import PIL
++############################################################
++############################################################
++
++# the application will open several window and place them on the desktop at
++# specific location. The below variables allow to configure the location
++
++# this is the X/Y offset for window position
++WINDOW_X_OFFSET         = int(os.environ.get("WINDOW_X_OFFSET")         or 0)
++WINDOW_Y_OFFSET         = int(os.environ.get("WINDOW_Y_OFFSET")         or 0)
++
++# this is the number of window per row
++WINDOW_PER_ROW          = int(os.environ.get("WINDOW_PER_ROW")          or 3)
++
++# this is a scaling factor to reduce the window dimension (2: window will be 2x smaller)
++WINDOW_RATIO            = float(os.environ.get("WINDOW_RATIO")          or 1)
++
++# this force the width and height of the video
++WINDOW_WIDTH            = int(os.environ.get("WINDOW_WIDTH")            or 0)
++WINDOW_HEIGHT           = int(os.environ.get("WINDOW_HEIGHT")           or 0)
++
++# this is the index position to place a window so a slide can be displayed. For instance, in a 3x3 configuration use 4 to let the center empty
++WINDOW_SLIDE_IDX        = int(os.environ.get("WINDOW_SLIDE_IDX")        or 4)
++
++# this is the number of batch (usually the number of cores) per system
++BATCH_PER_SYSTEM        = int(os.environ.get("BATCH_PER_SYSTEM")        or 1)
++
++# this is the number of system per board
++SYSTEM_PER_BOARD        = int(os.environ.get("SYSTEM_PER_BOARD")        or 2)
++
++# show info/FPS by default
++SHOW_INFO               = int(os.environ.get("SHOW_INFO")               or 0)
++SHOW_FPS                = int(os.environ.get("SHOW_FPS")                or 0)
++
++
++# enable the MJPG mode
++OPENCV_CAMERA_MJPG      = int(os.environ.get("OPENCV_CAMERA_MJPG")      or 1)
++# force camera width/height
++OPENCV_CAMERA_WIDTH     = int(os.environ.get("OPENCV_CAMERA_WIDTH")     or 0)
++OPENCV_CAMERA_HEIGHT    = int(os.environ.get("OPENCV_CAMERA_HEIGHT")    or 0)
++
++
++############################################################
++############################################################
++
++# only for YoloV2:
++def mipso_get_interpolation():
++    return cv2.INTER_NEAREST
++    return cv2.INTER_LINEAR
++    #return cv2.INTER_LANCZOS4
++
++# only for YoloV2
++def mipso_camera_reduce_delay():
++    return False # normal execution: capture / inference / display from capture
++    return True # reduce delay execution: inference on prev capture / capture / display from capture using previous inference
++
++# only for YoloV2
++def mipso_box_rounding(i):
++    return i
++    round = 20
++    return ((i + round) // (2*round) ) * 2*round
++
++def mipso_camera_init(c):
++    print ("Initial camera resolution {}x{} @ {}".format(
++        c.get(cv2.CAP_PROP_FRAME_WIDTH),
++        c.get(cv2.CAP_PROP_FRAME_HEIGHT),
++        c.get(cv2.CAP_PROP_FPS)))
++    if OPENCV_CAMERA_WIDTH != 0:
++        c.set(cv2.CAP_PROP_FRAME_WIDTH , OPENCV_CAMERA_WIDTH)
++    if OPENCV_CAMERA_HEIGHT != 0:
++        c.set(cv2.CAP_PROP_FRAME_HEIGHT , OPENCV_CAMERA_HEIGHT)
++    if OPENCV_CAMERA_MJPG != 0:
++        c.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
++    print ("Using camera resolution {}x{} @ {}".format(
++        c.get(cv2.CAP_PROP_FRAME_WIDTH),
++        c.get(cv2.CAP_PROP_FRAME_HEIGHT),
++        c.get(cv2.CAP_PROP_FPS)))
++
++def mipso_window_init(idx, width, height):
++    cv2.namedWindow(str(idx), cv2.WINDOW_GUI_NORMAL | cv2.WINDOW_FREERATIO)
++    #cv2.namedWindow(str(idx), cv2.WINDOW_NORMAL)
++
++    if WINDOW_WIDTH != 0 and WINDOW_HEIGHT != 0:
++        cur_width = WINDOW_WIDTH
++        cur_height = WINDOW_HEIGHT
++    else:
++        cur_width = int(width // WINDOW_RATIO)
++        cur_height = int(height // WINDOW_RATIO)
++
++    cv2.resizeWindow(str(idx), (cur_width, cur_height))
++    board=0
++    system=0
++    core=0
++    if 'VAISW_RUNSESSION_ENABLECORES' in os.environ and os.environ['VAISW_RUNSESSION_ENABLECORES'].startswith('B'):
++        c = os.environ['VAISW_RUNSESSION_ENABLECORES'].split(':')[0].split('_')
++        if len(c[0]) > 0:
++            board = int(c[0][1:])
++        if len(c) > 1:
++            system = int(c[1][1:])
++        if len(c) > 2:
++            core = int(c[2][1:])
++
++    cur_idx = idx + core + BATCH_PER_SYSTEM * ( system + SYSTEM_PER_BOARD * board)
++    # in case we want to put slide somewhere
++    if cur_idx >= WINDOW_SLIDE_IDX:
++        cur_idx = cur_idx + 1
++    pos_x = WINDOW_X_OFFSET + int( (cur_idx % WINDOW_PER_ROW)*cur_width)
++    pos_y = WINDOW_Y_OFFSET + int( 0 + (cur_idx // WINDOW_PER_ROW)*cur_height)
++
++    print("Move window {} {}x{} for system {} @ ({} , {})".format(idx, cur_width, cur_height, system, pos_x, pos_y))
++    cv2.moveWindow(str(idx), pos_x, pos_y)
++
++def mipso_parse_input(file):
++    mode='file'
++    for part in file.split(':'):
++        if 'camera' == part:
++            mode='camera'
++            continue
++        if part.startswith('http'):
++            mode=part
++            continue
++        if part.isdigit():
++            yield mode, int(part)
++        elif mode.startswith('http'):
++            yield 'http', mode + ':' + part
++            mode='file'
++        else:
++            mode='file'
++            yield mode, part
++
++
++class captureDirectory(object):
++    def __init__(self, path):
++        self.path = path
++        self.l = iter([os.path.join(self.path, x) for x in sorted(os.listdir(self.path))])
++
++    def isOpened(self):
++        return os.path.isdir(self.path)
++    def get(self, prop):
++        # only return the FPS
++        return 1
++    def read(self):
++        try:
++            i = next(self.l)
++        except StopIteration:
++            return False, None
++        return i, cv2.imread(i)
++
++class liveCapture(object):
++    def __init__(self,src):
++        self.stop = False
++        self.status = False
++        self.frames = deque([])
++        self.capture = cv2.VideoCapture(src)
++        #self.capture.set(cv2.CAP_PROP_BUFFERSIZE,2)
++        self.FPS = self.capture.get(cv2.CAP_PROP_FPS)
++        self.thread1 = Thread(target = self.bg_read, args=())
++        self.thread1.daemon = True
++        self.thread1.start()
++        self.readFps = 1
++    def bg_read(self):
++        while not self.stop:
++            if self.capture.isOpened():
++                self.status, frame = self.capture.read()
++                if self.status:
++                    self.frames.append(frame)
++    def isOpened(self):
++        return self.capture.isOpened()
++    def read(self):
++        # do a kind of adaptative fast forward with input buffer of 200 images
++        l = len(self.frames)
++        if l > 200:
++            self.readFps = 1 << ((l//100)-1)
++        elif l < 200:
++            self.readFps = 1
++        if len(self.frames) > 0:
++            f = self.frames[0]
++            for _ in range(int(self.readFps)):
++                # keep always 1 frame in the buffer
++                if len(self.frames) == 1:
++                    break
++                self.frames.popleft()
++            return True, f
++        else:
++            return False, None
++    def get(self, prop):
++        # only return the FPS
++        return int(self.FPS)
++    def __del__(self):
++        self.stop = True
++        self.thread1.join()
++
++
++def mipso_opencv_capture(file):
++    """
++    return a list of opencv capture device
++    """
++    camera = []
++    # TODO: use a better handling of the different mode (class)
++    if 'camera' == file:
++        # open all camera
++        camera_idx=0
++        while True:
++            c = cv2.VideoCapture(camera_idx)
++            if c.isOpened() == False:
++                break
++            camera.append(c)
++            mipso_camera_init(c)
++            camera_idx = camera_idx + 1
++    else:
++        for mode, url in mipso_parse_input(file):
++            if mode.startswith('http') and 'youtube' in url:
++                import pafy
++                option = url.split('@')
++                v = pafy.new(option[0])
++                resolution = [s.resolution for s in v.allstreams]
++                if option[-1] == 'list':
++                    print(f'Available resolution for {option[0]} are:')
++                    print('\n'.join(resolution))
++                    exit(0)
++                elif option[-1] in resolution:
++                    url = v.allstreams[resolution.index(option[-1])].url
++                else:
++                    url = v.getbest().url
++                if 'live' in option:
++                    c = liveCapture(url)
++                else:
++                    c = cv2.VideoCapture(url)
++            elif os.path.isdir(url):
++                c = captureDirectory(url)
++            else:
++                c = cv2.VideoCapture(url)
++            if c.isOpened() == False:
++                print("Error opening source {} {}".format(mode, url))
++                break
++            if mode == 'camera':
++                mipso_camera_init(c)
++            camera.append(c)
++
++    assert len(camera) > 0, 'Cannot capture source'
++    return camera
++
++# TODO: create a Mipso class
++showHelp = False
++pauseMode = False
++showWindowInfo = SHOW_INFO != 0
++showFps = SHOW_FPS != 0
++
++def mipso_process_key(key):
++    global showHelp
++    global pauseMode
++    global showWindowInfo
++    global showFps
++
++    if pauseMode:
++        print ("pause mode, press 'p' to play or any other key to move to the next frame")
++    while True:
++        if key == 27:
++            return key
++        if key > 0 and chr(key) in 'h':
++            showHelp = not showHelp
++        if key > 0 and chr(key) in 'p':
++            pauseMode = not pauseMode
++        if key > 0 and chr(key) in 'i':
++            showWindowInfo = not showWindowInfo
++        if key > 0 and chr(key) in 'f':
++            showFps = not showFps
++        if not pauseMode or key != -1:
++            break
++        key = cv2.waitKey(1)
++    return key
++
++def print_help(frame):
++
++    HELP="\
++Key usage:\n\
++    ESC : exit the demo\n\
++    h   : toggle displaying this help\n\
++    p   : pause the video (any other key will do frame by frame)\n\
++    i   : toggle showing network information\n\
++    f   : toggle showing FPS\n\
++"
++    scale = 1
++    if frame.shape[1] < 1240:
++        scale = scale * frame.shape[1] / 1240
++    for y, line in enumerate(HELP.split('\n')):
++        cv2.putText(frame, line, (20, int(scale*(200 + y * 40))), cv2.FONT_HERSHEY_SIMPLEX,
++                    scale, (255,255,0), 1)
++
++
++def print_text(frame, x, y, text, scale=1.2):
++    font                   = cv2.FONT_HERSHEY_SIMPLEX
++    bottomLeftCornerOfText = (10,500)
++    fontScale              = scale
++    fontColor              = (0,0,255)
++    lineType               = 2 if scale >= 1 else 1
++
++    cv2.putText(frame, text, (x, y),
++        font,
++        fontScale,
++        fontColor,
++        lineType)
++
++def mipso_window_info(f, idx, name, latency):
++    if showHelp:
++        print_help(f)
++    if showWindowInfo:
++        scale = 1
++        if f.shape[1] < 500:
++            scale = scale * f.shape[1] / 500
++        if showFps:
++            print_text( f, 10, int(scale*30), "Vaisw: {} FPS={}".format(name, str(int(1/latency))), scale )
++        else:
++            print_text( f, 10, int(scale*30), "Vaisw: {}".format(name), scale)
++        #print_text(f, 10, 50, "Latency is: " + str(int(1000*latency)) + " ms. FPS is: " + str(int(1/latency)) + " img/s")
++
++#inputSize is a tuple (x, y), meaning (width, height). Flag should respect that format
++#resize_function is a caller-provided function that takes image, x and y as input and returns the resized image
++#get_size_function is a caller-provided function that returns the size (x, y) of the input image to handle cases where the input image is not know
++inputSize = None
++def mipso_resize_input(flag_inputSize, input, resize_function, get_size_function=None):
++    global inputSize
++
++    assert callable(resize_function), 'Expected a resize function as third argument'
++
++    def parse_inputSize(inputSize_string):
++        return tuple( int(dim) for dim in inputSize_string.split('x') )
++
++    if flag_inputSize is None:
++        out_image = input
++    elif flag_inputSize == "auto":
++        if inputSize is None:
++            if isinstance(input, PIL.Image.Image):
++                inputSize = input.size
++            elif isinstance(input, np.ndarray):
++                inputSize = input.shape[1::-1]
++            elif get_size_function is not None:
++                inputSize = get_size_function(input)
++            else:
++                raise TypeError(f'Unknown image type {type(input)}, cannot guess shape of first image')
++            out_image = input
++        else:
++            out_image = resize_function(input, x=inputSize[0], y=inputSize[1])
++    else:
++        if inputSize is None:
++            inputSize = parse_inputSize(flag_inputSize)
++        out_image = resize_function(input, x=inputSize[0], y=inputSize[1])
++    return out_image
++
++
++class MipsoSaver:
++    """
++    This class is used to ease porting of a consistent saving functionality on all Mipsology demos
++
++    Class is initizalized with the following values:
++    out_path       : String that represents the output base path. It is a folder that will contain the video or the images. If it doesn't exist It will be created
++    as_images      : Boolean that indicates that we want to write images and not a video
++    dump_interval  : Integer that controls the frequency at which images will be saved on disk to not fill memory
++    fourcc         : Cv2 fourcc codec to save video
++    fps            : Fps of the video file
++    video_filename : Name of the video file
++
++    Class contains the following methods:
++    add            : Method that receives frames
++                     in video mode, store the frames in an internal buffer
++                     in as_images mode, also accepts a filename parameter and will periodically (based on dump_interval class attribute) call the save method
++    save           : Method to call to save added frames to disk as video or images.
++    """
++    def __init__(self, out_path, as_images=False, dump_interval=100, fourcc=None, fps=30, video_filename='output.avi'):
++        self.out_path = out_path
++        self.as_images = as_images
++        # as_images == True related options (images mode)
++        self.dump_interval = dump_interval
++        # as_images == False related options (video mode)
++        if not self.as_images:
++            self.fourcc = fourcc if fourcc else cv2.VideoWriter_fourcc(*'XVID')
++        self.fps = fps
++        self.video_filename = video_filename
++        self.buffer = {} if self.as_images else []
++        self.frame_counter = 0
++
++        if self.out_path:
++            if not os.path.exists(self.out_path):
++                os.makedirs(self.out_path)
++
++    def add(self, frame, filename=None):
++        if not self.out_path or self.out_path == '/dev/null':
++            return
++
++        if self.as_images:
++            if not filename:
++                filename = f'frame_{self.frame_counter}.png'
++                self.frame_counter += 1
++            self.buffer.update({filename : frame})
++            if len(self.buffer) >= self.dump_interval:
++                self.save()
++        else:
++            self.buffer.append(frame)
++
++    def save(self):
++        if not self.out_path or self.out_path == '/dev/null':
++            return
++
++        if self.as_images:
++            for filename, image in self.buffer.items():
++                if isinstance(image, np.ndarray):
++                    image = image if image.dtype == 'uint8' else image.astype('uint8')
++                cv2.imwrite(os.path.join(self.out_path, filename), image)
++        else:
++            if self.buffer:
++                vidwri = cv2.VideoWriter(
++                            os.path.join(self.out_path,self.video_filename),
++                            self.fourcc,
++                            self.fps,
++                            (self.buffer[0].shape[1], self.buffer[0].shape[0])
++                            )
++                for img in self.buffer:
++                    if isinstance(img, np.ndarray):
++                        img = img if img.dtype == 'uint8' else img.astype('uint8')
++                    else:
++                        print(f'Warning unknown type {type(img)}, saving to video might not work')
++                    vidwri.write(img)
++                vidwri.release()
++
++        self.buffer.clear()
+diff --git a/run b/run
+new file mode 100755
+index 0000000000000000000000000000000000000000..82b630a3330d9fda492678fb404628972955e91c
+--- /dev/null
++++ b/run
+@@ -0,0 +1,13 @@
++#! /bin/bash
++
++input="$1"
++shift
++
++weights="yolov6s.pt"
++[ -e "$1" ] && weights="$1" && shift
++
++if [ "$input" = "evaluate" ]; then
++  python3 tools/eval.py --data data/coco.yaml --weights "$weights" --task val --reproduce_640_eval --device cpu "$@" || exit 1
++else
++  python3 tools/infer.py --weights "$weights" --source "$input" --device cpu "$@" || exit 1
++fi
+diff --git a/tools/eval.py b/tools/eval.py
+index 97918140018a8417f23e470c4f8e4173f8b023e7..099d343a0c8c073955a59024853e829246582316 100644
+--- a/tools/eval.py
++++ b/tools/eval.py
+@@ -26,6 +26,8 @@ def get_args_parser(add_help=True):
+     parser.add_argument('--weights', type=str, default='./weights/yolov6s.pt', help='model.pt path(s)')
+     parser.add_argument('--batch-size', type=int, default=32, help='batch size')
+     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
++    parser.add_argument('--nb_imgs', type=int, default=None, help='Number of images in dataset to evaluate upon')
++    parser.add_argument('--threshold', type=float, default=None, help='accuracy threshold')
+     parser.add_argument('--conf-thres', type=float, default=0.03, help='confidence threshold')
+     parser.add_argument('--iou-thres', type=float, default=0.65, help='NMS IoU threshold')
+     parser.add_argument('--task', default='val', help='val, or speed')
+@@ -69,6 +71,8 @@ def run(data,
+         weights=None,
+         batch_size=32,
+         img_size=640,
++        nb_imgs=None,
++        threshold=None,
+         conf_thres=0.03,
+         iou_thres=0.65,
+         task='val',
+@@ -120,12 +124,18 @@ def run(data,
+                 test_load_size, letterbox_return_int, force_no_pad, not_infer_on_rect, scale_exact,
+                 verbose, do_coco_metric, do_pr_metric, plot_curve, plot_confusion_matrix)
+     model = val.init_model(model, weights, task)
+-    dataloader = val.init_data(dataloader, task)
++    dataloader = val.init_data(dataloader, task, nb_imgs=nb_imgs)
+ 
+     # eval
+     model.eval()
+     pred_result, vis_outputs, vis_paths = val.predict_model(model, dataloader, task)
+     eval_result = val.eval_model(pred_result, model, dataloader, task)
++    map50 = eval_result[0]
++    if threshold:
++        if map50 >= threshold:
++            print(f"\033[92m[SUCCESS]\033[0m mAP50 {map50:.3f} >= {threshold:.3f} (threshold)")
++        else:
++            sys.exit(f"\033[91m[FAIL]\033[0m mAP50 {map50:.3f} < {threshold:.3f} (threshold)")
+     return eval_result, vis_outputs, vis_paths
+ 
+ 
+diff --git a/tools/infer.py b/tools/infer.py
+index ab0a66760f7f39aa25e8f564427109a1d2505511..7b9f1ed967256f0f18fd78ae53cbf0628a4a8c7a 100644
+--- a/tools/infer.py
++++ b/tools/infer.py
+@@ -25,10 +25,8 @@ def get_args_parser(add_help=True):
+     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold for inference.')
+     parser.add_argument('--max-det', type=int, default=1000, help='maximal inferences per image.')
+     parser.add_argument('--device', default='0', help='device to run our model i.e. 0 or 0,1,2,3 or cpu.')
+-    parser.add_argument('--save-txt', action='store_true', help='save results to *.txt.')
+-    parser.add_argument('--save-img', action='store_false', help='save visuallized inference results.')
+-    parser.add_argument('--save-dir', type=str, help='directory to save predictions in. See --save-txt.')
+-    parser.add_argument('--view-img', action='store_true', help='show inference results')
++    parser.add_argument('--save-img', action='store_true', help='save visuallized inference results.')
++    parser.add_argument('--out_file', type=str, default=None, help='directory to save predictions in. See --save-txt.')
+     parser.add_argument('--classes', nargs='+', type=int, help='filter by classes, e.g. --classes 0, or --classes 0 2 3.')
+     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS.')
+     parser.add_argument('--project', default='runs/inference', help='save inference results to project/name.')
+@@ -36,6 +34,8 @@ def get_args_parser(add_help=True):
+     parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels.')
+     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences.')
+     parser.add_argument('--half', action='store_true', help='whether to use FP16 half-precision inference.')
++    parser.add_argument('--loop', action='store_true', help='Loop over video inputs')
++    parser.add_argument('--batch', type=int, default=1, help='batch size')
+ 
+     args = parser.parse_args()
+     LOGGER.info(args)
+@@ -51,10 +51,8 @@ def run(weights=osp.join(ROOT, 'yolov6s.pt'),
+         iou_thres=0.45,
+         max_det=1000,
+         device='',
+-        save_txt=False,
+         save_img=True,
+-        save_dir=None,
+-        view_img=True,
++        out_file=None,
+         classes=None,
+         agnostic_nms=False,
+         project=osp.join(ROOT, 'runs/inference'),
+@@ -62,6 +60,8 @@ def run(weights=osp.join(ROOT, 'yolov6s.pt'),
+         hide_labels=False,
+         hide_conf=False,
+         half=False,
++        loop=False,
++        batch=1,
+         ):
+     """ Inference process, supporting inference on one image file or directory which containing images.
+     Args:
+@@ -85,26 +85,12 @@ def run(weights=osp.join(ROOT, 'yolov6s.pt'),
+         half: Use FP16 half-precision inference, e.g. False
+     """
+     # create save dir
+-    if save_dir is None:
+-        save_dir = osp.join(project, name)
+-        save_txt_path = osp.join(save_dir, 'labels')
+-    else:
+-        save_txt_path = save_dir
+-    if (save_img or save_txt) and not osp.exists(save_dir):
+-        os.makedirs(save_dir)
+-    else:
+-        LOGGER.warning('Save directory already existed')
+-    if save_txt:
+-        save_txt_path = osp.join(save_dir, 'labels')
+-        if not osp.exists(save_txt_path):
+-            os.makedirs(save_txt_path)
++
++
+ 
+     # Inference
+     inferer = Inferer(source, weights, device, yaml, img_size, half)
+-    inferer.infer(conf_thres, iou_thres, classes, agnostic_nms, max_det, save_dir, save_txt, save_img, hide_labels, hide_conf, view_img)
+-
+-    if save_txt or save_img:
+-        LOGGER.info(f"Results saved to {save_dir}")
++    inferer.infer(conf_thres, iou_thres, classes, agnostic_nms, max_det, out_file, hide_labels, hide_conf, loop, batch)
+ 
+ 
+ def main(args):
+diff --git a/yolov6/core/evaler.py b/yolov6/core/evaler.py
+index e55830c7f544ff1e0f8d098adce09a41b9668c19..c9aab6d73c2343bcec2fc7653a391d5c93a07386 100644
+--- a/yolov6/core/evaler.py
++++ b/yolov6/core/evaler.py
+@@ -79,7 +79,7 @@ class Evaler:
+         model.half() if self.half else model.float()
+         return model
+ 
+-    def init_data(self, dataloader, task):
++    def init_data(self, dataloader, task, nb_imgs=None):
+         '''Initialize dataloader.
+         Returns a dataloader for task val or speed.
+         '''
+@@ -96,7 +96,7 @@ class Evaler:
+             rect = not self.not_infer_on_rect
+             dataloader = create_dataloader(self.data[task if task in ('train', 'val', 'test') else 'val'],
+                                            self.img_size, self.batch_size, self.stride, hyp=eval_hyp, check_labels=True, pad=pad, rect=rect,
+-                                           data_dict=self.data, task=task)[0]
++                                           data_dict=self.data, task=task, nb_imgs=nb_imgs)[0]
+         return dataloader
+ 
+     def predict_model(self, model, dataloader, task):
+diff --git a/yolov6/core/inferer.py b/yolov6/core/inferer.py
+index f1c59c9046091ada661996eb0769ce504a4fdab4..e3932b2232498792ffc22b9585a9d6e2b68146e9 100644
+--- a/yolov6/core/inferer.py
++++ b/yolov6/core/inferer.py
+@@ -20,6 +20,8 @@ from yolov6.data.datasets import LoadData
+ from yolov6.utils.nms import non_max_suppression
+ from yolov6.utils.torch_utils import get_model_info
+ 
++import mipso_custom
++
+ class Inferer:
+     def __init__(self, source, weights, device, yaml, img_size, half):
+ 
+@@ -46,7 +48,7 @@ class Inferer:
+             self.model(torch.zeros(1, 3, *self.img_size).to(self.device).type_as(next(self.model.model.parameters())))  # warmup
+ 
+         # Load data
+-        self.files = LoadData(source)
++        self.files = mipso_custom.mipso_opencv_capture(source)
+         self.source = source
+ 
+         # Switch model to deploy status
+@@ -61,97 +63,106 @@ class Inferer:
+ 
+         LOGGER.info("Switch model to deploy modality.")
+ 
+-    def infer(self, conf_thres, iou_thres, classes, agnostic_nms, max_det, save_dir, save_txt, save_img, hide_labels, hide_conf, view_img=True):
++    def infer(self, conf_thres, iou_thres, classes, agnostic_nms, max_det, out_file, hide_labels, hide_conf, loop=False, batch=1):
+         ''' Model Inference and results visualization '''
+-        vid_path, vid_writer, windows = None, None, []
+-        fps_calculator = CalcFPS()
+-        for img_src, img_path, vid_cap in tqdm(self.files):
+-            img, img_src = self.precess_image(img_src, self.img_size, self.stride, self.half)
+-            img = img.to(self.device)
+-            if len(img.shape) == 3:
+-                img = img[None]
+-                # expand for batch dim
+-            t1 = time.time()
+-            pred_results = self.model(img)
+-            det = non_max_suppression(pred_results, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)[0]
+-            t2 = time.time()
+ 
+-            # Create output files in nested dirs that mirrors the structure of the images' dirs
+-            rel_path = osp.relpath(osp.dirname(img_path), osp.dirname(self.source))
+-            save_path = osp.join(save_dir, rel_path, osp.basename(img_path))  # im.jpg
+-            txt_path = osp.join(save_dir, rel_path, osp.splitext(osp.basename(img_path))[0])
+-            os.makedirs(osp.join(save_dir, rel_path), exist_ok=True)
++        if out_file:
++            as_imgs = os.path.isdir(self.source) or self.source.split(".")[-1].lower() in ["jpg", "png", "gif", "jpeg", "bmp"]
++            if os.path.isdir(out_file):
++                output = mipso_custom.MipsoSaver(out_file, as_images=as_imgs)
++            else:
++                out_dir, out_filename = os.path.split(out_file)
++                out_dir = "." if not out_dir else out_dir
++                output = mipso_custom.MipsoSaver(out_dir, video_filename=out_filename, as_images=as_imgs)
++
++        if len(self.files) > 1:
++            batch = len(self.files)
++
++        batch_data = []
++        norm_gains = []
++        batch_src = []
++        firstShow = True
++
++        while len(self.files) > 0:
++            for video in self.files:
++                retval, img_src = video.read()
++                if not retval:
++                    if loop:
++                        video.set(cv2.CAP_PROP_POS_FRAMES, 0)
++                        retval, img_src = video.read()
++                    else:
++                        self.files = []
++
++                if not (img_src is None or img_src.size == 0):
++                    img, img_src = self.precess_image(img_src, self.img_size, self.stride, self.half)
++                    img = img.to(self.device)
++
++                    gn = torch.tensor(img_src.shape)[[1, 0, 1, 0]]  # normalization gain whwh
++                    img_ori = img_src.copy()
++
++                    batch_data.append(img)
++                    norm_gains.append(gn)
++                    batch_src.append(img_ori)
++
++            if len(batch_data) < batch:
++                if len(self.files) > 0:
++                    continue
++                elif len(batch_data) == 0:
++                    break
++
++            batch_data = torch.stack(batch_data)
+ 
+-            gn = torch.tensor(img_src.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+-            img_ori = img_src.copy()
++            t1 = time.time()
++            pred_results = self.model(batch_data)
++            dets = non_max_suppression(pred_results, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
++            t2 = time.time()
+ 
+-            # check image and font
+-            assert img_ori.data.contiguous, 'Image needs to be contiguous. Please apply to input images with np.ascontiguousarray(im).'
+             self.font_check()
+ 
+-            if len(det):
+-                det[:, :4] = self.rescale(img.shape[2:], det[:, :4], img_src.shape).round()
+-                for *xyxy, conf, cls in reversed(det):
+-                    if save_txt:  # Write to file
+-                        xywh = (self.box_convert(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+-                        line = (cls, *xywh, conf)
+-                        with open(txt_path + '.txt', 'a') as f:
+-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
++            for i, det in enumerate(dets):
++                gn, img, img_ori = norm_gains[i], batch_data[i], batch_src[i]
+ 
+-                    if save_img:
++                det[:, :4] = self.rescale(img.shape[1:], det[:, :4], img_ori.shape).round()
++                for *xyxy, conf, cls in reversed(det):
+                         class_num = int(cls)  # integer class
+                         label = None if hide_labels else (self.class_names[class_num] if hide_conf else f'{self.class_names[class_num]} {conf:.2f}')
+ 
+                         self.plot_box_and_label(img_ori, max(round(sum(img_ori.shape) / 2 * 0.003), 2), xyxy, label, color=self.generate_colors(class_num, True))
+ 
+                 img_src = np.asarray(img_ori)
+-
+-            # FPS counter
+-            fps_calculator.update(1.0 / (t2 - t1))
+-            avg_fps = fps_calculator.accumulate()
+-
+-            if self.files.type == 'video':
+-                self.draw_text(
+-                    img_src,
+-                    f"FPS: {avg_fps:0.1f}",
+-                    pos=(20, 20),
+-                    font_scale=1.0,
+-                    text_color=(204, 85, 17),
+-                    text_color_bg=(255, 255, 255),
+-                    font_thickness=2,
+-                )
+-
+-            if view_img:
+-                if img_path not in windows:
+-                    windows.append(img_path)
+-                    cv2.namedWindow(str(img_path), cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
+-                    cv2.resizeWindow(str(img_path), img_src.shape[1], img_src.shape[0])
+-                cv2.imshow(str(img_path), img_src)
+-                cv2.waitKey(1)  # 1 millisecond
+-
+-            # Save results (image with detections)
+-            if save_img:
+-                if self.files.type == 'image':
+-                    cv2.imwrite(save_path, img_src)
+-                else:  # 'video' or 'stream'
+-                    if vid_path != save_path:  # new video
+-                        vid_path = save_path
+-                        if isinstance(vid_writer, cv2.VideoWriter):
+-                            vid_writer.release()  # release previous video writer
+-                        if vid_cap:  # video
+-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
+-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+-                        else:  # stream
+-                            fps, w, h = 30, img_ori.shape[1], img_ori.shape[0]
+-                        save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
+-                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+-                    vid_writer.write(img_src)
++                mipso_custom.mipso_window_info(img_src, i, "YoloV6", t2-t1)
++
++                if out_file:
++                    output.add(img_src)
++                else:
++                    if firstShow:
++                        mipso_custom.mipso_window_init(i, img_src.shape[1], img_src.shape[0])
++                    cv2.imshow(str(i), img_src)
++
++            if not out_file:
++                choice = cv2.waitKey(1)  # 1 millisecond
++                choice = mipso_custom.mipso_process_key(choice)
++                if choice == 27:
++                    break
++
++            batch_src = []
++            batch_data = []
++            norm_gains = []
++            firstShow = False
++
++        if out_file:
++            LOGGER.info(f"Results saved to {out_file}")
++            output.save()
+ 
+     @staticmethod
+     def precess_image(img_src, img_size, stride, half):
+         '''Process image before image inference.'''
+         image = letterbox(img_src, img_size, stride=stride)[0]
++        # Padded resize (gray padding)
++        img_h, img_w, _ = image.shape
++        dh, dw = img_size[0] - img_h, img_size[1] - img_w
++        if dh != 0 or dw != 0:
++            image = cv2.copyMakeBorder(image, dh // 2, dh - dh//2, dw // 2, dw - dw//2, cv2.BORDER_CONSTANT, value=[114,114,114])
+         # Convert
+         image = image.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+         image = torch.from_numpy(np.ascontiguousarray(image))
+diff --git a/yolov6/data/data_load.py b/yolov6/data/data_load.py
+index 8cf36072ffa2ac108046cc51b472ceee357cfa04..58ee78e870252376c8def88af365d8a474a3247c 100644
+--- a/yolov6/data/data_load.py
++++ b/yolov6/data/data_load.py
+@@ -27,6 +27,7 @@ def create_dataloader(
+     shuffle=False,
+     data_dict=None,
+     task="Train",
++    nb_imgs=None,
+ ):
+     """Create general dataloader.
+ 
+@@ -52,6 +53,7 @@ def create_dataloader(
+             rank=rank,
+             data_dict=data_dict,
+             task=task,
++            nb_imgs=nb_imgs,
+         )
+ 
+     batch_size = min(batch_size, len(dataset))
+diff --git a/yolov6/data/datasets.py b/yolov6/data/datasets.py
+index 42ef683cd0bd8c3bcd4e4a718399601253846b6d..202c640d3242e2fd91d943e885cff05911abb565 100644
+--- a/yolov6/data/datasets.py
++++ b/yolov6/data/datasets.py
+@@ -56,6 +56,7 @@ class TrainValDataset(Dataset):
+         rank=-1,
+         data_dict=None,
+         task="train",
++        nb_imgs=None,
+     ):
+         assert task.lower() in ("train", "val", "speed"), f"Not supported task: {task}"
+         t1 = time.time()
+@@ -64,6 +65,8 @@ class TrainValDataset(Dataset):
+         self.task = self.task.capitalize()
+         self.class_names = data_dict["names"]
+         self.img_paths, self.labels = self.get_imgs_labels(self.img_dir)
++        if nb_imgs:
++            self.img_paths = self.img_paths[:nb_imgs]
+         if self.rect:
+             shapes = [self.img_info[p]["shape"] for p in self.img_paths]
+             self.shapes = np.array(shapes, dtype=np.float64)
+diff --git a/yolov6/layers/common.py b/yolov6/layers/common.py
+index 335f23a11ad9ddc7d45b37398cd1c663b49c7117..bc8bc8535d8f627b0bb1a5f63dc533d753baa6a6 100644
+--- a/yolov6/layers/common.py
++++ b/yolov6/layers/common.py
+@@ -357,7 +357,11 @@ class DetectBackend(nn.Module):
+         self.__dict__.update(locals())  # assign all variables to self
+ 
+     def forward(self, im, val=False):
+-        y, _ = self.model(im)
++        y = self.model(im)
++        if isinstance(y, list):
++            y = y[0]
++        else:
++            y = y
+         if isinstance(y, np.ndarray):
+             y = torch.tensor(y, device=self.device)
+         return y
+diff --git a/yolov6/utils/checkpoint.py b/yolov6/utils/checkpoint.py
+index c2f6239b6446c8fc19ec6ece438e06cbf22badeb..b13c2d411d4c7c7f283ab88f40361e93ec113fbe 100644
+--- a/yolov6/utils/checkpoint.py
++++ b/yolov6/utils/checkpoint.py
+@@ -10,7 +10,7 @@ from yolov6.utils.torch_utils import fuse_model
+ 
+ def load_state_dict(weights, model, map_location=None):
+     """Load weights from checkpoint file, only assign weights those layers' name and shape are match."""
+-    ckpt = torch.load(weights, map_location=map_location)
++    ckpt = torch.load(weights, weights_only=False, map_location=map_location)
+     state_dict = ckpt['model'].float().state_dict()
+     model_state_dict = model.state_dict()
+     state_dict = {k: v for k, v in state_dict.items() if k in model_state_dict and v.shape == model_state_dict[k].shape}
+@@ -22,7 +22,7 @@ def load_state_dict(weights, model, map_location=None):
+ def load_checkpoint(weights, map_location=None, inplace=True, fuse=True):
+     """Load model from checkpoint file."""
+     LOGGER.info("Loading checkpoint from {}".format(weights))
+-    ckpt = torch.load(weights, map_location=map_location)  # load
++    ckpt = torch.load(weights, weights_only=False, map_location=map_location)  # load
+     model = ckpt['ema' if ckpt.get('ema') else 'model'].float()
+     if fuse:
+         LOGGER.info("\nFusing model...")

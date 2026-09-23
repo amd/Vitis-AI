@@ -1,0 +1,6 @@
+SUBSYSTEM=="uio", ATTR{name}=="npu_versal_0", SYMLINK+="npu_versal_0", GROUP="npuip", MODE="0666"
+SUBSYSTEM=="uio", ATTR{name}=="npu_versal_1", SYMLINK+="npu_versal_1", GROUP="npuip", MODE="0666"
+SUBSYSTEM=="uio", ATTR{name}=="pp_versal", SYMLINK+="pp_versal", GROUP="npuip", MODE="0666"
+SUBSYSTEM=="uio", ATTR{name}=="npu_versal_ddr", SYMLINK+="npu_versal_ddr", GROUP="npuip", MODE="0666"
+SUBSYSTEM=="uio", ATTR{name}=="npu_versal_noc", SYMLINK+="npu_versal_noc", GROUP="npuip", MODE="0666"
+SUBSYSTEM=="uio", ATTR{name}=="npu_versal_memtiles", SYMLINK+="npu_versal_memtiles", GROUP="npuip", MODE="0666"

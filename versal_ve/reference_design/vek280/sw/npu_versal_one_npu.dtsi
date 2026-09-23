@@ -1,0 +1,122 @@
+/ {
+    npu_versal_devicetree_info {
+        version = "2.0";
+    };
+
+    /* UIO nodes at root level to avoid simple-bus ranges translation issues in 2026.1 */
+    npu_versal_0: npu_versal_0 {
+        linux,uio-name = "npu_versal_0";
+        compatible = "generic-uio";
+        /* CtrlBus may span up to 4MiB, but physical CtrlBus offsets
+           are calculated by shifting the offset within
+           HPM0_FPD left by 2 positions, hence the 16MiB.
+        */
+        reg = <0x0 0x81000000 0x0 0x1000000>;
+        reg-names = "ctrlbus_range";
+    };
+
+    npu_versal_ddr: npu_versal_ddr {
+        linux,uio-name = "npu_versal_ddr";
+        compatible = "generic-uio";
+        reg = <0x8 0x80000000 0x0 0x80000000 0x500 0x0 0x0 0x80000000 0x600 0x0 0x0 0x80000000>;
+        reg-names = "ddr0_range", "ddr1_range", "ddr2_range";
+    };
+
+    npu_versal_noc: npu_versal_noc {
+        linux,uio-name = "npu_versal_noc";
+        compatible = "generic-uio";
+        reg = <0x0 0xf1000000 0x0 0x8000000>;
+        reg-names = "noc_range";
+    };
+
+    npu_versal_memtiles: npu_versal_memtiles {
+        linux,uio-name = "npu_versal_memtiles";
+        compatible = "generic-uio";
+        reg = <0x200 0x00 0x00 0x4CB10000>;
+        reg-names = "memtiles_range";
+    };
+
+    pl-bus {
+        compatible = "simple-bus";
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+/*	misc_clk_0: misc_clk_0 {
+          #clock-cells = <0x00>;
+          clock-frequency = <0x989680>;
+          compatible = "fixed-clock";
+	};
+*/
+	misc_clk_1: misc_clk_1 {
+          #clock-cells = <0x00>;
+          clock-frequency = <0x17d78400>;
+          compatible = "fixed-clock";
+	};
+
+	misc_clk_2: misc_clk_2 {
+          #clock-cells = <0x00>;
+          clock-frequency = <0x1dcd6500>;
+          compatible = "fixed-clock";
+	};
+
+	misc_clk_3: misc_clk_3 {
+          #clock-cells = <0x00>;
+	  clock-frequency = <0xee6b280>;
+	  compatible = "fixed-clock";
+	};
+
+	misc_clk_4: misc_clk_4 {
+	  #clock-cells = <0x00>;
+	  clock-frequency = <0x7735940>;
+	  compatible = "fixed-clock";
+	};
+
+	interrupt-controller@80000000 {
+		#interrupt-cells = <0x02>;
+		clock-names = "s_axi_aclk";
+		clocks = <&misc_clk_0>;
+		compatible = "xlnx,axi-intc-4.1\0xlnx,xps-intc-1.00.a";
+		interrupt-controller;
+		interrupt-names = "irq";
+		interrupt-parent = <&gic>;
+		interrupts = <0x00 0x54 0x04>;
+		reg = <0x00 0x80000000 0x00 0x10000>;
+		xlnx,kind-of-intr = <0x02>;
+		xlnx,num-intr-inputs = <0x20>;
+		phandle = <0x17>;
+	};
+
+        /delete-node/ zyxclmm_drm;
+
+    };
+
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        /delete-node/ buffer@0;
+        /delete-node/ buffer@1;
+        /* DDR reserved for Npu */
+        ddr0_reserved: ddr0-npu_versal@0 {
+                no-map;
+                reg = <0x8 0x80000000 0x0 0x80000000>;
+        };
+        ddr1_reserved: ddr1-npu_versal@0 {
+                no-map;
+                reg = <0x500 0x0 0x0 0xc0000000>;
+        };
+        ddr2_reserved: ddr2-npu_versal@0 {
+                no-map;
+                reg = <0x600 0x0 0x0 0xc0000000>;
+        };
+    };
+
+};
+
+/ {
+    chosen {
+        bootargs = "console=ttyAMA0 earlycon=pl011,mmio32,0xFF000000,115200n8 clk_ignore_unused uio_pdrv_genirq.of_id=generic-uio root=/dev/mmcblk0p2 rw rootwait cma=512M";
+    };
+};
