@@ -412,6 +412,17 @@ This generates the following output files in the `artifacts/` folder:
 - Linux kernel image
 - Root filesystem
 
+**Step 3b.1 -- Prepare the UFS Boot Image:**
+
+After the Yocto build completes, perform the following additional steps on the host system to prepare the UFS boot image for Rev-B:
+
+1. Refer to [Vitis AI SDK](#3a-vitis-ai-sdk-optional----only-needed-to-build-your-own-applications) to install the sysroot and set up the environment.
+2. Run the following script to create the UFS boot image:
+
+```bash
+source ./create_ufs_image.sh
+```
+
 **Step 3c -- Build the Vitis AI Engine application:**
 
 ```bash
@@ -423,7 +434,7 @@ This generates PL and AI Engine PDI and overlay dtbo files in the `artifacts/` f
 - x\_plus\_ml.pdi
 - x\_plus\_ml.dtbo
 
-**Vitis AI SDK (optional — only needed to build your own applications)**
+### 3a. Vitis AI SDK (optional -- only needed to build your own applications)
 
 > **Note:** The reference design itself does **not** require any application compilation. The end-to-end pipelines are driven by the shell scripts under `/etc/vvas/examples/camera/` (see [Section 2d](#2d-initialize-camera-and-run-applications)), which invoke **prebuilt** GStreamer/VVAS plugins that are already included in the root filesystem. The AI Engine and PL overlay (`x_plus_ml.pdi`, `x_plus_ml.dtbo`) are produced by the boot-image build (Step 3c, `create_vitis_app.sh`), not by this SDK.
 >
