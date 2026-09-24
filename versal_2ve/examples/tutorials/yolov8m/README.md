@@ -446,7 +446,7 @@ For details on launching AI Analyzer inside docker, see AI Analyzer section of V
 
 ### Using Vitis AI Runtime (VART)
 
-As seen above, the total inference time using the ONNX Runtime Execution Provider is **24.441ms**. By switching to VART, this inference time can be reduced to **13.687 ms**. 
+As seen above, the total inference time using the ONNX Runtime Execution Provider is **23.363ms**. By switching to VART, this inference time can be reduced to **10.619 ms**. 
 VART offloads computation directly to the NPU with minimal CPU involvement, delivering more efficient end-to-end performance compared to ONNX Runtime.
 
 VART is a runtime environment designed for high-efficiency AI model inference on NPU hardware with minimal CPU overhead, and is used for precise end-to-end performance measurement.
@@ -507,7 +507,7 @@ sudo cp -r <path-to-board-package>/overlay/* /overlay/
 Program the PL + AI Engine overlay PDI and DTB:
 
 ```bash
-sudo fpgautil -b /overlay/vpl_gen_fixed_pld.pdi -o /overlay/pl_aiarm.dtbo
+sudo fpgautil -b /overlay/x_plus_ml.pdi -o /overlayx_plus_ml.dtbo
 ```
 
 **Copy Configuration Files**
@@ -531,7 +531,6 @@ Before running the application on the board, configure the required environment 
 ```bash
 echo 1 > /sys/module/rcupdate/parameters/rcu_cpu_stall_suppress
 export XRT_AIARM=true
-export LD_LIBRARY_PATH=/usr/lib/python3.12/site-packages/voe/lib/:/usr/lib/python3.12/site-packages/flexmlrt/lib/
 export XLNX_ENABLE_CACHE=0
 export XRT_ELF_FLOW=1
 ```
@@ -551,7 +550,16 @@ ml_vart --app-config ml_vart_config.json --benchmark --runs 100
 Expected console output:
 
 ```bash
-Average inference time over 100 runs: 13.82 ms
+Running the inference for 100 runs
++------------------------+--------------------------------+
+|                       Performance                       |
++------------------------+--------------------------------+
+| Metric                 | Value                          |
++------------------------+--------------------------------+
+| Average Inference Time | 10.69 ms/inference (dp_size=1) |
+|------------------------|--------------------------------|
+| Average Throughput     | 93.50 FPS                      |
++------------------------+--------------------------------+
 Run completed successfully.
 ```
 
