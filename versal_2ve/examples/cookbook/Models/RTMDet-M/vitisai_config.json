@@ -1,0 +1,30 @@
+{
+    "passes": [
+        {
+            "name": "init",
+            "plugin": "vaip-pass_init"
+        },
+        {
+            "name": "vaiml_partition",
+            "plugin": "vaip-pass_vaiml_partition",
+            "vaiml_config": {
+                "keep_outputs": true,
+                "device": "ve2",
+                "optimize_level": 3,
+                "aiecompiler_args": "--multi-layer-shim-dma-garbage-padding",
+                "experiments": "vit",
+                "logging_level": "info"
+            }
+        }
+    ],
+    "target": "VAIML",
+    "targets": [
+        {
+            "name": "VAIML",
+            "pass": [
+                "init",
+                "vaiml_partition"
+            ]
+        }
+    ]
+}

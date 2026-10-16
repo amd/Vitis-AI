@@ -1,0 +1,16 @@
+{
+    "inference-config": {
+        "model-file": "dino-vitb16_last_hidden_state/dino-vitb16_last_hidden_state.rai",
+        "runner-options": {
+            "log-level": "WARNING",
+            "ai-analyzer-profiling": false
+        }
+    },
+    "ifms-config": [
+        {
+            "name": "pixel_values",
+            "file": "input.bin"
+        }
+    ],
+    "ofms-dir": "output"
+}

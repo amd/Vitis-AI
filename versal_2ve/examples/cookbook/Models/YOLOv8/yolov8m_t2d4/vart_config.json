@@ -1,0 +1,16 @@
+{
+    "inference-config": {
+        "model-file": "yolov8m_int8/yolov8m_int8.rai",
+        "runner-options": {
+            "log-level": "WARNING",
+            "ai-analyzer-profiling": false
+        }
+    },
+    "ifms-config": [
+        {
+            "name": "images_QuantizeLinear_Output",
+            "file": "ifm_0.bin"
+        }
+    ],
+    "ofms-dir": "output"
+}

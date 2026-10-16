@@ -1,0 +1,27 @@
+# Core dependencies for cookbook
+tqdm>=4.65.0
+numpy>=1.24.0
+loguru>=0.7.0
+
+# For COCO dataset support
+pycocotools>=2.0.6
+
+# Deep learning frameworks (must be installed BEFORE yolox)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# For YOLOX models (requires torch to be installed first)
+onnx
+onnxsim
+opencv-python-headless
+thop
+yolox
+
+# AMD Vitis AI and Quark (for quantization and compilation)
+# These are provided by Vitis AI Docker environment:
+# - onnxruntime (with VitisAI Execution Provider)
+# - quark (AMD Quark for quantization)
+#
+# To use Vitis AI Docker:
+# docker run -it --rm -v $(pwd):/workspace \
+#   xilinx/vitis-ai-pytorch-cpu:latest bash

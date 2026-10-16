@@ -1,0 +1,16 @@
+{
+    "inference-config": {
+        "model-file": "yolox_s_int8/yolox_s_int8.rai",
+        "runner-options": {
+            "log-level": "WARNING",
+            "ai-analyzer-profiling": false
+        }
+    },
+    "ifms-config": [
+        {
+            "name": "images_QuantizeLinear_Output_4",
+            "file": "input.bin"
+        }
+    ],
+    "ofms-dir": "output"
+}

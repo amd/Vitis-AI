@@ -1,0 +1,16 @@
+{
+    "inference-config": {
+        "model-file": "resnet50-v1-12_quantized/resnet50-v1-12_quantized.rai",
+        "runner-options": {
+            "log-level": "WARNING",
+            "ai-analyzer-profiling": false
+        }
+    },
+    "ifms-config": [
+        {
+            "name": "data_QuantizeLinear_Output",
+            "file": "input.bin"
+        }
+    ],
+    "ofms-dir": "output"
+}

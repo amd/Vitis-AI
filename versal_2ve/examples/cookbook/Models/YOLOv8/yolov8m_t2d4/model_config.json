@@ -1,0 +1,17 @@
+{
+    "inference-config": {
+        "model-file": "yolov8m_int8",
+        "runner-options": {
+            "config-file": "vart_vitisai_config.json",
+            "log-level": "ERROR",
+            "ai-analyzer-profiling": false,
+            "ai-analyzer-visualization": false
+        }
+    },
+    "ifms-config": [
+        {
+            "name": "images_QuantizeLinear_Output",
+            "file": "ifm_0.bin"
+        }
+    ]
+}
