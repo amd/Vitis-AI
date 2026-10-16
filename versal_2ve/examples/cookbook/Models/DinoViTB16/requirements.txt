@@ -1,0 +1,25 @@
+# Host-side Python dependencies for DINO ViT-B/16 (facebook/dino-vitb16)
+# Run these on the HOST terminal (NOT inside the Vitis AI Docker container).
+# Used by:
+#   - export_dino_vitb16.py                (export reference ONNX from HuggingFace)
+#   - eval_dino_imagenet_knn.py --target cpu   (CPU accuracy reference, k-NN)
+#
+# Install with:
+#   python3 -m pip install -r requirements.txt
+
+# Export (HuggingFace checkpoint -> ONNX)
+# NOTE: the default export uses the classic TorchScript exporter (dynamo=False,
+# opset 17), so onnxscript is NOT required. Add it only if you pass --dynamo.
+torch>=2.0.0
+transformers>=4.40.0,<=4.52.3   # classic ViT naming (encoder.layer.N.attention...)
+onnx>=1.16.0
+
+# ONNX inference / accuracy eval
+onnxruntime>=1.18.0      # CPUExecutionProvider (CPU reference run)
+numpy>=1.24.0
+Pillow>=9.0.0            # PIL.Image, used by the ImageNet preprocessing
+tqdm>=4.65.0
+
+# NOTE: the VitisAI Execution Provider (onnxruntime with VitisAIExecutionProvider),
+# the model compiler (../../Utils/compile.py), and Quark are provided by the
+# Vitis AI Docker image, not by this file. See "Setup and Environment" in README.md.

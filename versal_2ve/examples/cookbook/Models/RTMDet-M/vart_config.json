@@ -1,0 +1,16 @@
+{
+    "inference-config": {
+        "model-file": "rtmdet_m_8xb32-300e_coco_1x3x640x640_without_smaller_tail_quantized_adaround/rtmdet_m_8xb32-300e_coco_1x3x640x640_without_smaller_tail_quantized_adaround.rai",
+        "runner-options": {
+            "log-level": "WARNING",
+            "ai-analyzer-profiling": false
+        }
+    },
+    "ifms-config": [
+        {
+            "name": "input",
+            "file": "input.bin"
+        }
+    ],
+    "ofms-dir": "output"
+}

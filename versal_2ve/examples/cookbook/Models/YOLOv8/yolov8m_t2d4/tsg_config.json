@@ -1,0 +1,27 @@
+{
+  "mode": "performant",
+  "entries": [
+    {
+      "ifm_op": "/model.0/conv/Conv",
+      "ofm_op": "/model.2/Concat",
+      "dim": "W",
+      "ofm_tile_sizes": [
+        40,
+        40,
+        40,
+        40
+      ]
+    },
+    {
+      "ifm_op": "/model.2/cv2/conv/Conv",
+      "ofm_op": "/model.4/Concat",
+      "dim": "W",
+      "ofm_tile_sizes": [
+        24,
+        24,
+        24,
+        8
+      ]
+    }
+  ]
+}

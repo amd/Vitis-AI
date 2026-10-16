@@ -1,0 +1,25 @@
+# Host-side Python dependencies for SegFormer-B0 (Cityscapes)
+# Run these on the HOST terminal (NOT inside the Vitis AI Docker container).
+# Used by:
+#   - export_segformer_b0_cityscapes.py   (export reference ONNX from HuggingFace)
+#   - eval_segformer_cityscapes_citywise.py --target cpu   (CPU accuracy reference)
+#   - compare_onnx.py                      (exported-vs-original comparison)
+#
+# Install with:
+#   python3 -m pip install -r requirements.txt
+
+# Export (HuggingFace checkpoint -> ONNX)
+torch>=2.0.0
+transformers>=5.0.0
+onnx>=1.16.0
+onnxscript>=0.1.0        # required by torch.onnx.export(..., dynamo=True)
+
+# ONNX inference / accuracy eval
+onnxruntime>=1.18.0      # CPUExecutionProvider (CPU reference run)
+numpy>=1.24.0
+opencv-python-headless>=4.8.0     # cv2, used by the Cityscapes eval
+tqdm>=4.65.0
+
+# NOTE: the VitisAI Execution Provider (onnxruntime with VitisAIExecutionProvider),
+# the model compiler (../../Utils/compile.py), and Quark are provided by the
+# Vitis AI Docker image, not by this file. See "Setup and Environment" in README.md.
